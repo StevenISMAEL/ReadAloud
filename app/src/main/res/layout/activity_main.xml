@@ -1,52 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="16dp">
+    android:layout_height="match_parent">
 
     <LinearLayout
         android:id="@+id/header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_alignParentTop="true">
+        android:padding="16dp">
 
         <Button
             android:id="@+id/btnSelectPdf"
             android:layout_width="0dp"
             android:layout_weight="1"
             android:layout_height="wrap_content"
-            android:text="Abrir PDF"
-            android:layout_marginEnd="4dp"/>
+            android:text="Abrir PDF" />
 
         <Button
             android:id="@+id/btnReadAloud"
             android:layout_width="0dp"
             android:layout_weight="1"
             android:layout_height="wrap_content"
-            android:text="Reproducir"
-            android:enabled="false"
-            android:layout_marginStart="4dp"/>
+            android:text="Leer Todo"
+            android:layout_marginStart="8dp" />
     </LinearLayout>
 
-    <FrameLayout
-        android:id="@+id/pdfContainer"
+    <WebView
+        android:id="@+id/webView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_below="@id/header"
-        android:layout_marginTop="16dp"
-        android:background="#EEEEEE">
-
-        <com.github.barteksc.pdfviewer.PDFView
-            android:id="@+id/pdfView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-        <com.example.readaloud.HighlightView
-            android:id="@+id/highlightView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-    </FrameLayout>
+        android:layout_below="@id/header" />
 
 </RelativeLayout>
