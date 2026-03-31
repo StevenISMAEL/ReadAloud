@@ -28,13 +28,11 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private WebView webView;
     private TextToSpeech tts;
     private Button btnSelectPdf, btnReadAloud;
-    private List<Integer> currentWordLengths = new ArrayList<>();
-    private boolean isReading = false;
-    private boolean ttsReady = false;
-    private int currentFragmentOffset = 0;
-    private int currentStartWordIndex = 0;  // Índice global de la primera palabra del fragmento actual (dentro de la página)
 
-    private static final String TAG = "ReadAloud";
+    // Variables de sincronización (Públicas para que WebAppInterface las vea)
+    public int globalOffsetIndex = 0;
+    private List<Integer> currentWordMap = new ArrayList<>();
+    private int lastHighlightedIndex = -1;
 
     private final ActivityResultLauncher<Intent> pdfPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -56,8 +54,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         btnReadAloud = findViewById(R.id.btnReadAloud);
 
         tts = new TextToSpeech(this, this);
-        btnReadAloud.setEnabled(false);
-        btnReadAloud.setText("Cargando voz...");
 
         setupWebView();
 
@@ -68,26 +64,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         });
 
         btnReadAloud.setOnClickListener(v -> {
-            if (!ttsReady) {
-                Toast.makeText(this, "La voz aún no está lista", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (!isReading) {
-                Log.d(TAG, "Iniciando lectura página por página...");
-                evaluateJavascript("window.clearAllHighlights();");
-                evaluateJavascript("window.startReadingFromCurrentPage();");
-            } else {
-                stopReading();
-            }
+            // Lee toda la página actual desde el principio (índice 0)
+            webView.evaluateJavascript("window.startReadingFrom(0);", null);
         });
-    }
-
-    private void stopReading() {
-        if (tts != null) tts.stop();
-        isReading = false;
-        btnReadAloud.setText("Leer en voz alta");
-        evaluateJavascript("window.clearAllHighlights();");
-        Log.d(TAG, "Lectura detenida");
     }
 
     private void setupWebView() {
@@ -97,26 +76,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         settings.setAllowContentAccess(true);
         settings.setAllowFileAccessFromFileURLs(true);
         settings.setAllowUniversalAccessFromFileURLs(true);
-        settings.setDomStorageEnabled(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setUseWideViewPort(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
+        // Conectamos el puente con el nombre "AndroidApp"
         webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                Log.d(TAG, "Página cargada: " + url);
                 injectInteractionScript();
-                webView.postDelayed(() -> injectInteractionScript(), 2000);
-            }
-
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                Log.e(TAG, "Error WebView: " + description);
-                Toast.makeText(MainActivity.this, "Error: " + description, Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -125,7 +93,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     private void loadPdfInWebView(Uri uri) {
         try {
-            Log.d(TAG, "Cargando PDF desde URI: " + uri.toString());
             File tempFile = new File(getCacheDir(), "temp_viewer.pdf");
             InputStream inputStream = getContentResolver().openInputStream(uri);
             FileOutputStream outputStream = new FileOutputStream(tempFile);
@@ -138,341 +105,101 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             outputStream.close();
             inputStream.close();
 
-            String viewerUrl = "file:///android_asset/pdfjs/web/viewer.html?file=" + Uri.encode(tempFile.getAbsolutePath());
-            Log.d(TAG, "Cargando URL: " + viewerUrl);
-            webView.loadUrl(viewerUrl);
-            btnReadAloud.setEnabled(ttsReady);
-            btnReadAloud.setText("Leer en voz alta");
+            webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
+            btnReadAloud.setEnabled(true);
 
         } catch (Exception e) {
-            Log.e(TAG, "Error al cargar PDF: " + e.getMessage(), e);
-            Toast.makeText(this, "Error al cargar PDF: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Log.e("PDF_LOAD", "Error: " + e.getMessage());
         }
     }
 
     private void injectInteractionScript() {
         String js =
-                "(function() {" +
-                        "    console.log('Inyectando script mejorado...');" +
-                        "    window.allSpansByPage = {};" +
-                        "" +
-                        "    // Recolectar spans de todas las páginas y organizarlos por página\n" +
-                        "    window.collectSpansByPage = function() {\n" +
-                        "        var pages = document.querySelectorAll('.page');\n" +
-                        "        pages.forEach(function(page) {\n" +
-                        "            var pageNum = page.getAttribute('data-page-number');\n" +
-                        "            if (!pageNum) return;\n" +
-                        "            var spans = page.querySelectorAll('.textLayer span');\n" +
-                        "            var spansArray = [];\n" +
-                        "            spans.forEach(function(span) {\n" +
-                        "                if (span.innerText && span.innerText.trim().length > 0) {\n" +
-                        "                    spansArray.push(span);\n" +
-                        "                }\n" +
-                        "            });\n" +
-                        "            window.allSpansByPage[pageNum] = spansArray;\n" +
-                        "        });\n" +
-                        "        console.log('Spans recolectados por página: ' + Object.keys(window.allSpansByPage).length);\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Obtener texto de una página específica con longitudes de palabras\n" +
-                        "    window.getPageTextWithWords = function(pageNum, startWordIndex) {\n" +
-                        "        var spans = window.allSpansByPage[pageNum];\n" +
-                        "        if (!spans) return null;\n" +
-                        "        var fullText = \"\";\n" +
-                        "        var wordLengths = [];\n" +
-                        "        var globalWordIdx = 0;\n" +
-                        "        var started = (startWordIndex === undefined || startWordIndex === 0);\n" +
-                        "        spans.forEach(function(span) {\n" +
-                        "            var text = span.innerText;\n" +
-                        "            var words = text.split(/\\s+/);\n" +
-                        "            for (var i = 0; i < words.length; i++) {\n" +
-                        "                if (words[i].length > 0) {\n" +
-                        "                    if (started) {\n" +
-                        "                        if (fullText.length > 0) fullText += \" \";\n" +
-                        "                        fullText += words[i];\n" +
-                        "                        wordLengths.push(words[i].length);\n" +
-                        "                    } else {\n" +
-                        "                        if (globalWordIdx === startWordIndex) {\n" +
-                        "                            started = true;\n" +
-                        "                            fullText += words[i];\n" +
-                        "                            wordLengths.push(words[i].length);\n" +
-                        "                        }\n" +
-                        "                    }\n" +
-                        "                    globalWordIdx++;\n" +
-                        "                }\n" +
-                        "            }\n" +
-                        "            if (started) {\n" +
-                        "                fullText += \" \";\n" +
-                        "                wordLengths.push(1); // espacio entre spans\n" +
-                        "            } else {\n" +
-                        "                globalWordIdx++; // saltamos el espacio entre spans\n" +
-                        "            }\n" +
-                        "        });\n" +
-                        "        // Eliminar último espacio extra\n" +
-                        "        if (fullText.endsWith(\" \")) {\n" +
-                        "            fullText = fullText.slice(0, -1);\n" +
-                        "            wordLengths.pop();\n" +
-                        "        }\n" +
-                        "        return { text: fullText, lengths: wordLengths };\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Obtener página actual visible\n" +
-                        "    window.getCurrentVisiblePage = function() {\n" +
-                        "        var pages = document.querySelectorAll('.page');\n" +
-                        "        var viewportHeight = window.innerHeight;\n" +
-                        "        for (var i = 0; i < pages.length; i++) {\n" +
-                        "            var rect = pages[i].getBoundingClientRect();\n" +
-                        "            if (rect.top >= -viewportHeight/2 && rect.top <= viewportHeight/2) {\n" +
-                        "                return pages[i].getAttribute('data-page-number');\n" +
-                        "            }\n" +
-                        "        }\n" +
-                        "        return pages.length > 0 ? pages[0].getAttribute('data-page-number') : null;\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Cambiar a una página específica usando API de PDF.js\n" +
-                        "    window.goToPage = function(pageNum) {\n" +
-                        "        if (window.PDFViewerApplication && window.PDFViewerApplication.page) {\n" +
-                        "            window.PDFViewerApplication.page = parseInt(pageNum);\n" +
-                        "        } else {\n" +
-                        "            var input = document.querySelector('input[data-pdfjs-page-number]');\n" +
-                        "            if (input) {\n" +
-                        "                input.value = pageNum;\n" +
-                        "                input.dispatchEvent(new Event('change'));\n" +
-                        "            }\n" +
-                        "        }\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Iniciar lectura desde la página actual (desde la primera palabra)\n" +
-                        "    window.startReadingFromCurrentPage = function() {\n" +
-                        "        window.startReadingFromWordIndex(0);\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Iniciar lectura desde un índice de palabra específico (global dentro de la página)\n" +
-                        "    window.startReadingFromWordIndex = function(startWordIndex) {\n" +
-                        "        var currentPage = window.getCurrentVisiblePage();\n" +
-                        "        if (!currentPage) {\n" +
-                        "            console.log('No se pudo obtener página actual');\n" +
-                        "            return;\n" +
-                        "        }\n" +
-                        "        window.currentReadingPage = currentPage;\n" +
-                        "        var pageData = window.getPageTextWithWords(currentPage, startWordIndex);\n" +
-                        "        if (!pageData || pageData.text.length === 0) {\n" +
-                        "            if (window.AndroidApp) window.AndroidApp.onError('No hay texto en la página');\n" +
-                        "            return;\n" +
-                        "        }\n" +
-                        "        var lengthsJson = pageData.lengths.join(',');\n" +
-                        "        if (window.AndroidApp) {\n" +
-                        "            window.AndroidApp.onStartPageRead(currentPage, pageData.text, lengthsJson, startWordIndex);\n" +
-                        "        }\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Resaltar palabra en la página actual (global index)\n" +
-                        "    window.highlightWordInPage = function(pageNum, globalWordIndex) {\n" +
-                        "        var spans = window.allSpansByPage[pageNum];\n" +
-                        "        if (!spans) return;\n" +
-                        "        // Limpiar resaltados en esta página\n" +
-                        "        spans.forEach(function(span) {\n" +
-                        "            span.classList.remove('reading-highlight');\n" +
-                        "        });\n" +
-                        "        // Encontrar el span que contiene la palabra\n" +
-                        "        var currentPos = 0;\n" +
-                        "        for (var i = 0; i < spans.length; i++) {\n" +
-                        "            var words = spans[i].innerText.split(/\\s+/);\n" +
-                        "            for (var j = 0; j < words.length; j++) {\n" +
-                        "                if (words[j].length > 0) {\n" +
-                        "                    if (currentPos === globalWordIndex) {\n" +
-                        "                        spans[i].classList.add('reading-highlight');\n" +
-                        "                        spans[i].scrollIntoView({behavior: 'smooth', block: 'center'});\n" +
-                        "                        return;\n" +
-                        "                    }\n" +
-                        "                    currentPos++;\n" +
-                        "                }\n" +
-                        "            }\n" +
-                        "            currentPos++; // espacio entre spans\n" +
-                        "        }\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Limpiar todos los resaltados\n" +
-                        "    window.clearAllHighlights = function() {\n" +
-                        "        document.querySelectorAll('.reading-highlight').forEach(function(el) {\n" +
-                        "            el.classList.remove('reading-highlight');\n" +
-                        "        });\n" +
-                        "    };\n" +
-                        "" +
-                        "    // Observador para nuevos spans y para hacer clickeables los spans\n" +
-                        "    var observer = new MutationObserver(function() {\n" +
-                        "        window.collectSpansByPage();\n" +
-                        "        document.querySelectorAll('.textLayer span').forEach(function(s) {\n" +
-                        "            if (!s.hasAttribute('data-click-listener')) {\n" +
-                        "                s.setAttribute('data-click-listener', 'true');\n" +
-                        "                s.style.cursor = 'pointer';\n" +
-                        "                s.addEventListener('click', function(e) {\n" +
-                        "                    e.stopPropagation();\n" +
-                        "                    console.log('Span clickeado');\n" +
-                        "                    var pageNum = window.getCurrentVisiblePage();\n" +
-                        "                    if (!pageNum) return;\n" +
-                        "                    var spans = window.allSpansByPage[pageNum];\n" +
-                        "                    if (!spans) return;\n" +
-                        "                    var targetSpan = e.target;\n" +
-                        "                    var globalWordIdx = 0;\n" +
-                        "                    for (var i = 0; i < spans.length; i++) {\n" +
-                        "                        var words = spans[i].innerText.split(/\\s+/);\n" +
-                        "                        for (var j = 0; j < words.length; j++) {\n" +
-                        "                            if (words[j].length > 0) {\n" +
-                        "                                if (spans[i] === targetSpan) {\n" +
-                        "                                    window.startReadingFromWordIndex(globalWordIdx);\n" +
-                        "                                    return;\n" +
-                        "                                }\n" +
-                        "                                globalWordIdx++;\n" +
-                        "                            }\n" +
-                        "                        }\n" +
-                        "                        globalWordIdx++; // espacio entre spans\n" +
-                        "                    }\n" +
-                        "                });\n" +
-                        "            }\n" +
-                        "        });\n" +
-                        "    });\n" +
-                        "    observer.observe(document.body, { childList: true, subtree: true });\n" +
-                        "" +
-                        "    // Estilo de resaltado\n" +
-                        "    var style = document.createElement('style');\n" +
-                        "    style.innerHTML = '.reading-highlight { background-color: #FFEB3B !important; color: #000000 !important; box-shadow: 0 0 5px rgba(0,0,0,0.3); border-radius: 3px; }';\n" +
-                        "    document.head.appendChild(style);\n" +
-                        "" +
-                        "    // Recolectar spans después de cargar\n" +
-                        "    setTimeout(function() { window.collectSpansByPage(); }, 1500);\n" +
-                        "" +
-                        "    // Exponer función para notificar que una página terminó\n" +
-                        "    window.onPageReadComplete = function() {\n" +
-                        "        var nextPage = parseInt(window.currentReadingPage) + 1;\n" +
-                        "        var totalPages = Object.keys(window.allSpansByPage).length;\n" +
-                        "        if (nextPage <= totalPages) {\n" +
-                        "            window.goToPage(nextPage);\n" +
-                        "            setTimeout(function() {\n" +
-                        "                window.currentReadingPage = nextPage;\n" +
-                        "                window.startReadingFromWordIndex(0);\n" +
-                        "            }, 1000);\n" +
-                        "        } else {\n" +
-                        "            if (window.AndroidApp) window.AndroidApp.onReadingFinished();\n" +
-                        "        }\n" +
-                        "    };\n" +
-                        "})();";
+                // 1. Obtener spans de la página que el usuario está viendo
+                "window.getSpans = function() {" +
+                        "  var pageNum = window.PDFViewerApplication.page;" +
+                        "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
+                        "  return container ? Array.from(container.querySelectorAll('span')) : [];" +
+                        "};" +
 
-        evaluateJavascript(js);
+                        // 2. Iniciar lectura y enviar mapa de longitudes a Java
+                        "window.startReadingFrom = function(startIndex) {" +
+                        "  var spans = window.getSpans();" +
+                        "  if (spans.length === 0) return;" +
+                        "  var selection = spans.slice(startIndex);" +
+                        "  var fullText = selection.map(s => s.innerText).join(' ');" +
+                        "  var lengths = selection.map(s => s.innerText.length).join(',');" +
+                        "  if (window.AndroidApp) { window.AndroidApp.onStartContinuousRead(fullText, lengths, startIndex); }" +
+                        "};" +
+
+                        // 3. Función de resaltado con auto-scroll
+                        "window.highlightWord = function(index) {" +
+                        "  var spans = window.getSpans();" +
+                        "  var target = spans[index];" +
+                        "  if (!target) return;" +
+                        "  document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
+                        "  target.classList.add('reading-highlight');" +
+                        "  var rect = target.getBoundingClientRect();" +
+                        "  if (rect.bottom > window.innerHeight || rect.top < 0) {" +
+                        "    target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
+                        "  }" +
+                        "};" +
+
+                        // 4. Detector de toques (mousedown es más rápido que click en móviles)
+                        "document.addEventListener('mousedown', function(e) {" +
+                        "  if (e.target && e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
+                        "    var spans = window.getSpans();" +
+                        "    var index = spans.indexOf(e.target);" +
+                        "    if (index !== -1) window.startReadingFrom(index);" +
+                        "  }" +
+                        "}, true);" +
+
+                        // Estilos CSS
+                        "var style = document.createElement('style');" +
+                        "style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 2px; position: relative; z-index: 10; }';" +
+                        "document.head.appendChild(style);";
+
+        webView.evaluateJavascript(js, null);
     }
 
-    // Método público para ejecutar JavaScript desde WebAppInterface
-    public void evaluateJavascript(String script) {
-        if (webView != null) {
-            webView.evaluateJavascript(script, null);
-        }
-    }
-
-    // Métodos usados por WebAppInterface
-    public void setWordLengths(List<Integer> lengths) {
-        this.currentWordLengths = lengths;
-        Log.d(TAG, "Longitudes de palabras para página actual: " + lengths.size());
-    }
-
-    public void setReadingState(boolean reading) {
-        this.isReading = reading;
-        runOnUiThread(() -> {
-            if (reading) btnReadAloud.setText("Detener lectura");
-            else btnReadAloud.setText("Leer en voz alta");
-        });
-    }
-
-    public void showError(String error) {
-        runOnUiThread(() -> {
-            Toast.makeText(this, "Error: " + error, Toast.LENGTH_LONG).show();
-            Log.e(TAG, "Error: " + error);
-        });
-    }
-
-    public void setCurrentFragmentOffset(int offset) {
-        this.currentFragmentOffset = offset;
-    }
-
-    public void setStartWordIndex(int startWordIndex) {
-        this.currentStartWordIndex = startWordIndex;
-        Log.d(TAG, "currentStartWordIndex = " + startWordIndex);
+    // MÉTODO QUE FALTABA: Recibe el mapa de palabras desde el puente
+    public void setWordMap(List<Integer> map) {
+        this.currentWordMap = map;
+        this.lastHighlightedIndex = -1; // Resetear para nueva lectura
     }
 
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            int result = tts.setLanguage(new Locale("es", "ES"));
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                result = tts.setLanguage(new Locale("es"));
-                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts.setLanguage(Locale.getDefault());
-                    Log.w(TAG, "Usando idioma por defecto: " + tts.getLanguage());
-                }
-            }
-            tts.setSpeechRate(0.9f);
-            tts.setPitch(1.0f);
-            ttsReady = true;
-            runOnUiThread(() -> {
-                btnReadAloud.setEnabled(true);
-                btnReadAloud.setText("Leer en voz alta");
-            });
-            Log.d(TAG, "TTS listo. Idioma: " + tts.getLanguage());
-
-            tts.speak("Voz lista", TextToSpeech.QUEUE_FLUSH, null, "test");
-
+            tts.setLanguage(new Locale("es", "ES"));
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override
-                public void onStart(String utteranceId) {
-                    if (!utteranceId.equals("test")) {
-                        runOnUiThread(() -> setReadingState(true));
-                    }
-                }
-
-                @Override
-                public void onDone(String utteranceId) {
-                    // No hacer nada aquí; la página completa se maneja en WebAppInterface
-                }
-
-                @Override
-                public void onError(String utteranceId) {
-                    Log.e(TAG, "Error en utterance: " + utteranceId);
-                    runOnUiThread(() -> {
-                        setReadingState(false);
-                        showError("Error en reproducción de voz");
-                    });
-                }
+                @Override public void onStart(String utteranceId) {}
+                @Override public void onDone(String utteranceId) {}
+                @Override public void onError(String utteranceId) {}
 
                 @Override
                 public void onRangeStart(String utteranceId, int start, int end, int frame) {
-                    if (!utteranceId.startsWith("PAGE_")) return;
-                    if (currentWordLengths.isEmpty()) return;
+                    runOnUiThread(() -> {
+                        if (currentWordMap.isEmpty()) return;
 
-                    int absoluteStart = currentFragmentOffset + start;
-                    int accumulatedChars = 0;
-                    int targetWordIndexRelative = -1;
-                    for (int i = 0; i < currentWordLengths.size(); i++) {
-                        int wordLen = currentWordLengths.get(i);
-                        int nextLimit = accumulatedChars + wordLen;
-                        if (absoluteStart >= accumulatedChars && absoluteStart < nextLimit) {
-                            targetWordIndexRelative = i;
-                            break;
+                        int accumulated = 0;
+                        for (int i = 0; i < currentWordMap.size(); i++) {
+                            // El +1 es por el espacio que une las palabras en el .join(' ')
+                            int nextLimit = accumulated + currentWordMap.get(i) + 1;
+
+                            if (start >= accumulated && start < nextLimit) {
+                                if (i != lastHighlightedIndex) {
+                                    lastHighlightedIndex = i;
+                                    // Índice absoluto = índice relativo de lectura + punto de inicio
+                                    int absoluteIndex = i + globalOffsetIndex;
+                                    webView.evaluateJavascript("window.highlightWord(" + absoluteIndex + ");", null);
+                                }
+                                break;
+                            }
+                            accumulated = nextLimit;
                         }
-                        accumulatedChars = nextLimit + 1;
-                    }
-
-                    if (targetWordIndexRelative != -1) {
-                        int globalWordIndex = currentStartWordIndex + targetWordIndexRelative;
-                        String pageNum = utteranceId.split("_")[1];
-                        evaluateJavascript("window.highlightWordInPage(" + pageNum + ", " + globalWordIndex + ");");
-                    }
+                    });
                 }
-            });
-        } else {
-            Log.e(TAG, "Fallo al inicializar TTS. Status: " + status);
-            runOnUiThread(() -> {
-                btnReadAloud.setEnabled(false);
-                btnReadAloud.setText("Voz no disponible");
-                Toast.makeText(this, "No se pudo inicializar la voz", Toast.LENGTH_LONG).show();
             });
         }
     }
@@ -484,5 +211,49 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             tts.shutdown();
         }
         super.onDestroy();
+    }
+
+    // --- AÑADE ESTOS MÉTODOS AL FINAL DE TU CLASE MAINACTIVITY ---
+
+    public void setWordLengths(List<Integer> lengths) {
+        this.currentWordMap = lengths;
+    }
+
+    public void setStartWordIndex(int index) {
+        this.globalOffsetIndex = index;
+    }
+
+    // Este ayuda a la sincronización fina de la palabra actual
+    public void setCurrentFragmentOffset(int offset) {
+        // Puedes dejarlo vacío por ahora o usarlo para depuración
+        Log.d("TTS", "Offset actual: " + offset);
+    }
+
+    // Un método genérico para mostrar errores que pide tu WebAppInterface
+    public void showError(String message) {
+        runOnUiThread(() ->
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        );
+    }
+
+    // Controla si el botón debe decir "Play" o "Pause"
+    public void setReadingState(boolean isReading) {
+        runOnUiThread(() -> {
+            if (isReading) {
+                btnReadAloud.setText("Pausar");
+            } else {
+                btnReadAloud.setText("Reproducir");
+            }
+        });
+    }
+
+    // ESTE ES CRUCIAL: El puente no puede llamar a webView.evaluateJavascript directamente
+// así que le creamos este "túnel" de acceso.
+    public void evaluateJavascript(String script) {
+        runOnUiThread(() -> {
+            if (webView != null) {
+                webView.evaluateJavascript(script, null);
+            }
+        });
     }
 }

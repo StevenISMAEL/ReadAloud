@@ -126,4 +126,27 @@ public class WebAppInterface {
             }
         });
     }
+
+    @JavascriptInterface
+    public void onStartContinuousRead(String fullText, String lengthsJson, int startIndex) {
+        activity.runOnUiThread(() -> {
+            try {
+                // 1. Guardamos dónde empezamos en la página
+                ((MainActivity) activity).globalOffsetIndex = startIndex;
+
+                // 2. Convertimos el mapa de longitudes
+                List<Integer> wordLengths = new ArrayList<>();
+                for (String s : lengthsJson.split(",")) {
+                    if (!s.isEmpty()) wordLengths.add(Integer.parseInt(s));
+                }
+                ((MainActivity) activity).setWordMap(wordLengths);
+
+                // 3. Hablamos
+                tts.stop();
+                tts.speak(fullText, TextToSpeech.QUEUE_FLUSH, null, "READ_ID");
+            } catch (Exception e) {
+                Log.e("BRIDGE", "Error en sincronización: " + e.getMessage());
+            }
+        });
+    }
 }
