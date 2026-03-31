@@ -22,11 +22,11 @@ public class WebAppInterface {
                 if (activity instanceof MainActivity) {
                     MainActivity main = (MainActivity) activity;
 
-                    // Sincronizar el estado actual
+                    // 1. Sincronizar estado
                     main.currentReadingPage = pageNum;
-                    main.setStartWordIndex(startIndex);
+                    main.globalOffsetIndex = startIndex;
 
-                    // Convertir el mapa de longitudes de palabras
+                    // 2. Procesar longitudes
                     List<Integer> wordLengths = new ArrayList<>();
                     String[] parts = lengthsJson.split(",");
                     for (String s : parts) {
@@ -34,7 +34,7 @@ public class WebAppInterface {
                     }
                     main.setWordLengths(wordLengths);
 
-                    // Detener cualquier lectura previa e iniciar la nueva
+                    // 3. Hablar
                     tts.stop();
                     tts.speak(fullText, TextToSpeech.QUEUE_FLUSH, null, "READ_ID");
                 }
