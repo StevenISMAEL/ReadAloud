@@ -16,17 +16,16 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
-    public void onStartContinuousRead(String fullText, String lengthsJson, int startIndex, int pageNum) {
+    public void onStartContinuousRead(String fullText, String lengthsJson, int startIndex, int pageNum, int totalPages) {
         activity.runOnUiThread(() -> {
             try {
                 if (activity instanceof MainActivity) {
                     MainActivity main = (MainActivity) activity;
 
-                    // 1. Sincronizar estado
                     main.currentReadingPage = pageNum;
-                    main.globalOffsetIndex = startIndex;
+                    main.totalPagesInCurrentPdf = totalPages;
+                    main.setStartWordIndex(startIndex);
 
-                    // 2. Procesar longitudes
                     List<Integer> wordLengths = new ArrayList<>();
                     String[] parts = lengthsJson.split(",");
                     for (String s : parts) {
@@ -34,7 +33,6 @@ public class WebAppInterface {
                     }
                     main.setWordLengths(wordLengths);
 
-                    // 3. Hablar
                     tts.stop();
                     tts.speak(fullText, TextToSpeech.QUEUE_FLUSH, null, "READ_ID");
                 }

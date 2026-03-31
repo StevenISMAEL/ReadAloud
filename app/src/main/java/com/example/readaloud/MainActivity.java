@@ -1,9 +1,12 @@
 package com.example.readaloud;
 
-import android.content.Context;
+import android.annotation.SuppressLint;
+import android.content.ContentResolver;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
@@ -14,6 +17,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -39,29 +43,35 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private RecyclerView rvRecent;
     private View recentContainer;
 
-    // Estado de lectura
     public int currentReadingPage = 1;
+    public int totalPagesInCurrentPdf = 0;
     public int globalOffsetIndex = 0;
     private List<Integer> currentWordMap = new ArrayList<>();
     private int lastWordIndexInPage = 0;
     private boolean isPaused = false;
     private boolean isStoppedManually = true;
 
-    // Datos del PDF actual
     private String currentPdfUriStr;
     private String currentPdfTitle;
 
-    // Launcher para seleccionar nuevo PDF
     private final ActivityResultLauncher<Intent> pdfPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri uri = result.getData().getData();
-                    // Obtener nombre del archivo (opcional, aquí usamos el último segmento)
-                    String title = uri.getLastPathSegment();
-                    // Guardar permiso persistente para poder abrirlo siempre
-                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    loadPdfInWebView(uri, 1, 0, title);
+                    try {
+                        // 1. Extraer el nombre real del archivo
+                        String realName = getFileName(uri);
+
+                        // 2. Pedir permiso persistente
+                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                        // 3. Cargar
+                        loadPdfInWebView(uri, 1, 0, realName);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        Toast.makeText(this, "Error al obtener archivo", Toast.LENGTH_SHORT).show();
+                    }
                 }
             }
     );
@@ -71,7 +81,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Inicializar vistas
         webView = findViewById(R.id.webView);
         recentContainer = findViewById(R.id.recentContainer);
         rvRecent = findViewById(R.id.rvRecent);
@@ -83,11 +92,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         tts = new TextToSpeech(this, this);
         setupWebView();
 
-        // Configurar Lista de Recientes
         rvRecent.setLayoutManager(new LinearLayoutManager(this));
         refreshRecentList();
 
-        // Botón Abrir Nuevo
         btnSelectPdf.setOnClickListener(v -> {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -96,7 +103,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             pdfPickerLauncher.launch(intent);
         });
 
-        // Botón Play / Reanudar
         btnReadAloud.setOnClickListener(v -> {
             isStoppedManually = false;
             if (isPaused) {
@@ -107,7 +113,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             }
         });
 
-        // Botón Pausa
         btnPause.setOnClickListener(v -> {
             isStoppedManually = true;
             if (tts.isSpeaking()) {
@@ -118,7 +123,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             }
         });
 
-        // Botón Stop (Vuelve a la lista de recientes)
         btnStop.setOnClickListener(v -> {
             stopReading();
             webView.setVisibility(View.GONE);
@@ -127,29 +131,23 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         });
     }
 
-    private void stopReading() {
-        isStoppedManually = true;
-        if (tts != null) tts.stop();
-        isPaused = false;
-        lastWordIndexInPage = 0;
-        btnReadAloud.setText("Play");
-        updateUI(false);
-        webView.evaluateJavascript("document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));", null);
-    }
-
-    private void refreshRecentList() {
-        List<RecentPdf> list = RecentManager.getRecentPdfs(this);
-        RecentAdapter adapter = new RecentAdapter(list, this::onRecentSelected);
-        rvRecent.setAdapter(adapter);
-    }
-
-    private void onRecentSelected(RecentPdf pdf) {
-        try {
-            Uri uri = Uri.parse(pdf.uriString);
-            loadPdfInWebView(uri, pdf.lastPage, pdf.lastWordIndex, pdf.title);
-        } catch (Exception e) {
-            Toast.makeText(this, "No se puede acceder al archivo", Toast.LENGTH_SHORT).show();
+    // MÉTODO PARA OBTENER EL NOMBRE REAL
+    @SuppressLint("Range")
+    private String getFileName(Uri uri) {
+        String result = null;
+        if (uri.getScheme().equals("content")) {
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    result = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME));
+                }
+            }
         }
+        if (result == null) {
+            result = uri.getPath();
+            int cut = result.lastIndexOf('/');
+            if (cut != -1) result = result.substring(cut + 1);
+        }
+        return result;
     }
 
     private void loadPdfInWebView(Uri uri, int page, int word, String title) {
@@ -174,18 +172,18 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 @Override
                 public void onPageFinished(WebView view, String url) {
                     injectInteractionScript();
-                    // Si el PDF es reciente, saltamos a la página guardada inmediatamente
                     if (page > 1) {
                         webView.evaluateJavascript("window.PDFViewerApplication.page = " + page, null);
                     }
                 }
             });
-
             webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
             btnReadAloud.setEnabled(true);
-
         } catch (Exception e) {
-            Log.e("PDF", "Error: " + e.getMessage());
+            Toast.makeText(this, "Error: PDF no accesible", Toast.LENGTH_LONG).show();
+            stopReading();
+            webView.setVisibility(View.GONE);
+            recentContainer.setVisibility(View.VISIBLE);
         }
     }
 
@@ -202,8 +200,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "    var spans = window.getSpansOfPage(savedPage);" +
                         "    if (spans.length === 0) { window.resumeReading(startIndex, savedPage); return; }" +
                         "    var selection = spans.slice(startIndex);" +
-                        "    var textArray = selection.map(s => s.innerText);" +
-                        "    window.AndroidApp.onStartContinuousRead(textArray.join(' '), textArray.map(s => s.length).join(','), startIndex, savedPage);" +
+                        "    var total = window.PDFViewerApplication.pagesCount;" +
+                        "    window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>s.innerText.length).join(','), startIndex, savedPage, total);" +
                         "  }, 600);" +
                         "};" +
 
@@ -212,16 +210,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "  var spans = window.getSpansOfPage(pageNum);" +
                         "  if (spans.length === 0) { setTimeout(() => window.startReadingFrom(startIndex), 500); return; }" +
                         "  var selection = spans.slice(startIndex);" +
-                        "  var textArray = selection.map(s => s.innerText);" +
-                        "  window.AndroidApp.onStartContinuousRead(textArray.join(' '), textArray.map(s => s.length).join(','), startIndex, pageNum);" +
+                        "  var total = window.PDFViewerApplication.pagesCount;" +
+                        "  window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>s.innerText.length).join(','), startIndex, pageNum, total);" +
                         "};" +
 
                         "window.highlightWord = function(index, pageNum) {" +
                         "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"]');" +
                         "  if (!container) return;" +
                         "  container.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
-                        "  var spans = container.querySelectorAll('.textLayer span');" +
-                        "  var target = spans[index];" +
+                        "  var target = container.querySelectorAll('.textLayer span')[index];" +
                         "  if (target) {" +
                         "    target.classList.add('reading-highlight');" +
                         "    var rect = target.getBoundingClientRect();" +
@@ -230,9 +227,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "};" +
 
                         "window.readNextPage = function() {" +
-                        "  var total = window.PDFViewerApplication.pagesCount;" +
                         "  var current = window.PDFViewerApplication.page;" +
-                        "  if (current < total) {" +
+                        "  if (current < window.PDFViewerApplication.pagesCount) {" +
                         "    window.PDFViewerApplication.page = current + 1;" +
                         "    setTimeout(() => window.startReadingFrom(0), 1200);" +
                         "  }" +
@@ -242,13 +238,14 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "  if (e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
                         "    var pageEl = e.target.closest('.page');" +
                         "    var pageNum = parseInt(pageEl.dataset.pageNumber);" +
-                        "    var index = Array.from(pageEl.querySelectorAll('span')).indexOf(e.target);" +
+                        "    var spans = Array.from(pageEl.querySelectorAll('span'));" +
+                        "    var index = spans.indexOf(e.target);" +
                         "    if (index !== -1) { window.PDFViewerApplication.page = pageNum; window.startReadingFrom(index); }" +
                         "  }" +
                         "}, true);" +
 
                         "var style = document.createElement('style');" +
-                        "style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 2px; position: relative; z-index: 10; }';" +
+                        "style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 4px; position: relative; z-index: 10; }';" +
                         "document.head.appendChild(style);";
 
         webView.evaluateJavascript(js, null);
@@ -256,6 +253,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
     public void setStartWordIndex(int index) { this.globalOffsetIndex = index; }
+
+    private void stopReading() {
+        isStoppedManually = true;
+        if (tts != null) tts.stop();
+        isPaused = false;
+        lastWordIndexInPage = 0;
+        btnReadAloud.setText("Play");
+        updateUI(false);
+    }
 
     public void updateUI(boolean reading) {
         runOnUiThread(() -> {
@@ -286,10 +292,10 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                             if (start >= acc && start < limit) {
                                 lastWordIndexInPage = i + globalOffsetIndex;
                                 webView.evaluateJavascript("window.highlightWord(" + lastWordIndexInPage + "," + currentReadingPage + ")", null);
-
-                                // AUTO-GUARDAR PROGRESO
                                 if (currentPdfUriStr != null) {
-                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(currentPdfTitle, currentPdfUriStr, currentReadingPage, lastWordIndexInPage));
+                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(
+                                            currentPdfTitle, currentPdfUriStr, currentReadingPage, totalPagesInCurrentPdf, lastWordIndexInPage
+                                    ));
                                 }
                                 break;
                             }
@@ -305,10 +311,16 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setAllowFileAccess(true);
-        s.setAllowContentAccess(true);
-        s.setAllowFileAccessFromFileURLs(true);
         s.setAllowUniversalAccessFromFileURLs(true);
         webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
+    }
+
+    private void refreshRecentList() {
+        List<RecentPdf> list = RecentManager.getRecentPdfs(this);
+        RecentAdapter adapter = new RecentAdapter(list, pdf -> {
+            loadPdfInWebView(Uri.parse(pdf.uriString), pdf.lastPage, pdf.lastWordIndex, pdf.title);
+        });
+        rvRecent.setAdapter(adapter);
     }
 
     @Override
@@ -317,35 +329,54 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onDestroy();
     }
 
-    // --- ADAPTER INTERNO PARA LA LISTA ---
     private class RecentAdapter extends RecyclerView.Adapter<RecentAdapter.VH> {
         private final List<RecentPdf> items;
         private final OnPdfClickListener listener;
 
-        public RecentAdapter(List<RecentPdf> items, OnPdfClickListener listener) {
+        RecentAdapter(List<RecentPdf> items, OnPdfClickListener listener) {
             this.items = items;
             this.listener = listener;
         }
 
         @NonNull @Override public VH onCreateViewHolder(@NonNull ViewGroup p, int t) {
-            View v = LayoutInflater.from(p.getContext()).inflate(android.R.layout.simple_list_item_2, p, false);
-            return new VH(v);
+            return new VH(LayoutInflater.from(p.getContext()).inflate(R.layout.item_recent_pdf, p, false));
         }
 
         @Override public void onBindViewHolder(@NonNull VH holder, int p) {
             RecentPdf item = items.get(p);
-            holder.t1.setText(item.title);
-            holder.t2.setText("Página: " + item.lastPage);
+            holder.title.setText(item.title);
+            holder.info.setText("Página " + item.lastPage + (item.totalPages > 0 ? " de " + item.totalPages : ""));
+
+            if (item.totalPages > 0) {
+                holder.progress.setProgress((int)((item.lastPage/(float)item.totalPages)*100));
+            }
+
+            // Clic normal para abrir
             holder.itemView.setOnClickListener(v -> listener.onClick(item));
+
+            // CLIC PARA BORRAR
+            holder.btnDelete.setOnClickListener(v -> {
+                RecentManager.removePdf(MainActivity.this, item.uriString);
+                refreshRecentList(); // Refrescamos la lista para que desaparezca
+                Toast.makeText(MainActivity.this, "Eliminado de recientes", Toast.LENGTH_SHORT).show();
+            });
         }
 
         @Override public int getItemCount() { return items.size(); }
 
         class VH extends RecyclerView.ViewHolder {
-            TextView t1, t2;
-            VH(View v) { super(v); t1 = v.findViewById(android.R.id.text1); t2 = v.findViewById(android.R.id.text2); }
+            TextView title, info;
+            ProgressBar progress;
+            View btnDelete; // Nueva vista
+
+            VH(View v) {
+                super(v);
+                title = v.findViewById(R.id.tvTitle);
+                info = v.findViewById(R.id.tvInfo);
+                progress = v.findViewById(R.id.pbReadProgress);
+                btnDelete = v.findViewById(R.id.btnDelete); // Vincular botón
+            }
         }
     }
-
     interface OnPdfClickListener { void onClick(RecentPdf pdf); }
 }

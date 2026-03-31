@@ -29,4 +29,14 @@ public class RecentManager {
         if (json == null) return new ArrayList<>();
         return new Gson().fromJson(json, new TypeToken<List<RecentPdf>>(){}.getType());
     }
+
+    public static void removePdf(Context context, String uriString) {
+        List<RecentPdf> list = getRecentPdfs(context);
+        // Buscamos y eliminamos el que coincida con la URI
+        list.removeIf(item -> item.uriString.equals(uriString));
+
+        SharedPreferences.Editor editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit();
+        editor.putString(KEY_LIST, new Gson().toJson(list));
+        editor.apply();
+    }
 }
