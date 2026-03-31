@@ -23,11 +23,13 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
-    public void onStartPageRead(String pageNum, String pageText, String lengthsJson) {
-        Log.d(TAG, "onStartPageRead página " + pageNum + ", texto longitud: " + pageText.length());
+    public void onStartPageRead(String pageNum, String pageText, String lengthsJson, int startWordIndex) {
+        Log.d(TAG, "onStartPageRead página " + pageNum + ", startWordIndex=" + startWordIndex +
+                ", texto longitud: " + pageText.length());
         activity.runOnUiThread(() -> {
             currentPageNum = pageNum;
 
+            // Procesar longitudes de palabras (corresponden al texto ya recortado)
             List<Integer> wordLengths = new ArrayList<>();
             if (lengthsJson != null && !lengthsJson.isEmpty()) {
                 for (String s : lengthsJson.split(",")) {
@@ -38,8 +40,10 @@ public class WebAppInterface {
             }
             if (activity instanceof MainActivity) {
                 ((MainActivity) activity).setWordLengths(wordLengths);
+                ((MainActivity) activity).setStartWordIndex(startWordIndex);
             }
 
+            // Dividir el texto de la página en fragmentos (máx 4000 caracteres)
             currentPageFragments = splitIntoFragments(pageText, 4000);
             currentFragmentIndex = 0;
             currentPageOffset = 0;
@@ -49,9 +53,12 @@ public class WebAppInterface {
 
     private void speakNextFragment() {
         if (currentFragmentIndex >= currentPageFragments.size()) {
+            // Página completada
             Log.d(TAG, "Página " + currentPageNum + " completada");
             if (activity instanceof MainActivity) {
-                ((MainActivity) activity).evaluateJavaScript("window.onPageReadComplete();");
+                ((MainActivity) activity).runOnUiThread(() -> {
+                    ((MainActivity) activity).evaluateJavascript("window.onPageReadComplete();");
+                });
             }
             return;
         }
@@ -73,7 +80,8 @@ public class WebAppInterface {
             }
         }
 
-        currentPageOffset += fragment.length() + 1;
+        // Actualizar offset para el próximo fragmento
+        currentPageOffset += fragment.length() + 1; // +1 aproximado por espacio entre fragmentos
         currentFragmentIndex++;
     }
 
@@ -113,7 +121,7 @@ public class WebAppInterface {
         activity.runOnUiThread(() -> {
             if (activity instanceof MainActivity) {
                 ((MainActivity) activity).setReadingState(false);
-                ((MainActivity) activity).evaluateJavaScript("window.clearAllHighlights();");
+                ((MainActivity) activity).evaluateJavascript("window.clearAllHighlights();");
                 ((MainActivity) activity).showError("Lectura completada");
             }
         });

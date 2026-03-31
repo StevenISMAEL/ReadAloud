@@ -32,6 +32,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private boolean isReading = false;
     private boolean ttsReady = false;
     private int currentFragmentOffset = 0;
+    private int currentStartWordIndex = 0;  // Índice global de la primera palabra del fragmento actual (dentro de la página)
 
     private static final String TAG = "ReadAloud";
 
@@ -73,19 +74,10 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             }
             if (!isReading) {
                 Log.d(TAG, "Iniciando lectura página por página...");
-                evaluateJavaScript("window.clearAllHighlights();");
-                evaluateJavaScript("window.startReadingFromCurrentPage();");
+                evaluateJavascript("window.clearAllHighlights();");
+                evaluateJavascript("window.startReadingFromCurrentPage();");
             } else {
                 stopReading();
-            }
-        });
-    }
-
-    // Método público para que WebAppInterface pueda ejecutar JavaScript
-    public void evaluateJavaScript(String script) {
-        runOnUiThread(() -> {
-            if (webView != null) {
-                webView.evaluateJavascript(script, null);
             }
         });
     }
@@ -94,7 +86,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         if (tts != null) tts.stop();
         isReading = false;
         btnReadAloud.setText("Leer en voz alta");
-        evaluateJavaScript("window.clearAllHighlights();");
+        evaluateJavascript("window.clearAllHighlights();");
         Log.d(TAG, "Lectura detenida");
     }
 
@@ -183,25 +175,45 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "    };\n" +
                         "" +
                         "    // Obtener texto de una página específica con longitudes de palabras\n" +
-                        "    window.getPageTextWithWords = function(pageNum) {\n" +
+                        "    window.getPageTextWithWords = function(pageNum, startWordIndex) {\n" +
                         "        var spans = window.allSpansByPage[pageNum];\n" +
                         "        if (!spans) return null;\n" +
                         "        var fullText = \"\";\n" +
                         "        var wordLengths = [];\n" +
+                        "        var globalWordIdx = 0;\n" +
+                        "        var started = (startWordIndex === undefined || startWordIndex === 0);\n" +
                         "        spans.forEach(function(span) {\n" +
                         "            var text = span.innerText;\n" +
                         "            var words = text.split(/\\s+/);\n" +
                         "            for (var i = 0; i < words.length; i++) {\n" +
                         "                if (words[i].length > 0) {\n" +
-                        "                    if (fullText.length > 0) fullText += \" \";\n" +
-                        "                    fullText += words[i];\n" +
-                        "                    wordLengths.push(words[i].length);\n" +
+                        "                    if (started) {\n" +
+                        "                        if (fullText.length > 0) fullText += \" \";\n" +
+                        "                        fullText += words[i];\n" +
+                        "                        wordLengths.push(words[i].length);\n" +
+                        "                    } else {\n" +
+                        "                        if (globalWordIdx === startWordIndex) {\n" +
+                        "                            started = true;\n" +
+                        "                            fullText += words[i];\n" +
+                        "                            wordLengths.push(words[i].length);\n" +
+                        "                        }\n" +
+                        "                    }\n" +
+                        "                    globalWordIdx++;\n" +
                         "                }\n" +
                         "            }\n" +
-                        "            fullText += \" \";\n" +
-                        "            wordLengths.push(1); // espacio entre spans\n" +
+                        "            if (started) {\n" +
+                        "                fullText += \" \";\n" +
+                        "                wordLengths.push(1); // espacio entre spans\n" +
+                        "            } else {\n" +
+                        "                globalWordIdx++; // saltamos el espacio entre spans\n" +
+                        "            }\n" +
                         "        });\n" +
-                        "        return { text: fullText, lengths: wordLengths, spans: spans };\n" +
+                        "        // Eliminar último espacio extra\n" +
+                        "        if (fullText.endsWith(\" \")) {\n" +
+                        "            fullText = fullText.slice(0, -1);\n" +
+                        "            wordLengths.pop();\n" +
+                        "        }\n" +
+                        "        return { text: fullText, lengths: wordLengths };\n" +
                         "    };\n" +
                         "" +
                         "    // Obtener página actual visible\n" +
@@ -222,7 +234,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "        if (window.PDFViewerApplication && window.PDFViewerApplication.page) {\n" +
                         "            window.PDFViewerApplication.page = parseInt(pageNum);\n" +
                         "        } else {\n" +
-                        "            // Fallback: simular clic en el botón de página\n" +
                         "            var input = document.querySelector('input[data-pdfjs-page-number]');\n" +
                         "            if (input) {\n" +
                         "                input.value = pageNum;\n" +
@@ -231,27 +242,32 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "        }\n" +
                         "    };\n" +
                         "" +
-                        "    // Iniciar lectura desde la página actual\n" +
+                        "    // Iniciar lectura desde la página actual (desde la primera palabra)\n" +
                         "    window.startReadingFromCurrentPage = function() {\n" +
+                        "        window.startReadingFromWordIndex(0);\n" +
+                        "    };\n" +
+                        "" +
+                        "    // Iniciar lectura desde un índice de palabra específico (global dentro de la página)\n" +
+                        "    window.startReadingFromWordIndex = function(startWordIndex) {\n" +
                         "        var currentPage = window.getCurrentVisiblePage();\n" +
                         "        if (!currentPage) {\n" +
                         "            console.log('No se pudo obtener página actual');\n" +
                         "            return;\n" +
                         "        }\n" +
                         "        window.currentReadingPage = currentPage;\n" +
-                        "        var pageData = window.getPageTextWithWords(currentPage);\n" +
+                        "        var pageData = window.getPageTextWithWords(currentPage, startWordIndex);\n" +
                         "        if (!pageData || pageData.text.length === 0) {\n" +
                         "            if (window.AndroidApp) window.AndroidApp.onError('No hay texto en la página');\n" +
                         "            return;\n" +
                         "        }\n" +
                         "        var lengthsJson = pageData.lengths.join(',');\n" +
                         "        if (window.AndroidApp) {\n" +
-                        "            window.AndroidApp.onStartPageRead(currentPage, pageData.text, lengthsJson);\n" +
+                        "            window.AndroidApp.onStartPageRead(currentPage, pageData.text, lengthsJson, startWordIndex);\n" +
                         "        }\n" +
                         "    };\n" +
                         "" +
-                        "    // Resaltar palabra en la página actual\n" +
-                        "    window.highlightWordInPage = function(pageNum, wordIndex) {\n" +
+                        "    // Resaltar palabra en la página actual (global index)\n" +
+                        "    window.highlightWordInPage = function(pageNum, globalWordIndex) {\n" +
                         "        var spans = window.allSpansByPage[pageNum];\n" +
                         "        if (!spans) return;\n" +
                         "        // Limpiar resaltados en esta página\n" +
@@ -264,7 +280,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "            var words = spans[i].innerText.split(/\\s+/);\n" +
                         "            for (var j = 0; j < words.length; j++) {\n" +
                         "                if (words[j].length > 0) {\n" +
-                        "                    if (currentPos === wordIndex) {\n" +
+                        "                    if (currentPos === globalWordIndex) {\n" +
                         "                        spans[i].classList.add('reading-highlight');\n" +
                         "                        spans[i].scrollIntoView({behavior: 'smooth', block: 'center'});\n" +
                         "                        return;\n" +
@@ -283,9 +299,38 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "        });\n" +
                         "    };\n" +
                         "" +
-                        "    // Observador para nuevos spans\n" +
+                        "    // Observador para nuevos spans y para hacer clickeables los spans\n" +
                         "    var observer = new MutationObserver(function() {\n" +
                         "        window.collectSpansByPage();\n" +
+                        "        document.querySelectorAll('.textLayer span').forEach(function(s) {\n" +
+                        "            if (!s.hasAttribute('data-click-listener')) {\n" +
+                        "                s.setAttribute('data-click-listener', 'true');\n" +
+                        "                s.style.cursor = 'pointer';\n" +
+                        "                s.addEventListener('click', function(e) {\n" +
+                        "                    e.stopPropagation();\n" +
+                        "                    console.log('Span clickeado');\n" +
+                        "                    var pageNum = window.getCurrentVisiblePage();\n" +
+                        "                    if (!pageNum) return;\n" +
+                        "                    var spans = window.allSpansByPage[pageNum];\n" +
+                        "                    if (!spans) return;\n" +
+                        "                    var targetSpan = e.target;\n" +
+                        "                    var globalWordIdx = 0;\n" +
+                        "                    for (var i = 0; i < spans.length; i++) {\n" +
+                        "                        var words = spans[i].innerText.split(/\\s+/);\n" +
+                        "                        for (var j = 0; j < words.length; j++) {\n" +
+                        "                            if (words[j].length > 0) {\n" +
+                        "                                if (spans[i] === targetSpan) {\n" +
+                        "                                    window.startReadingFromWordIndex(globalWordIdx);\n" +
+                        "                                    return;\n" +
+                        "                                }\n" +
+                        "                                globalWordIdx++;\n" +
+                        "                            }\n" +
+                        "                        }\n" +
+                        "                        globalWordIdx++; // espacio entre spans\n" +
+                        "                    }\n" +
+                        "                });\n" +
+                        "            }\n" +
+                        "        });\n" +
                         "    });\n" +
                         "    observer.observe(document.body, { childList: true, subtree: true });\n" +
                         "" +
@@ -297,7 +342,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "    // Recolectar spans después de cargar\n" +
                         "    setTimeout(function() { window.collectSpansByPage(); }, 1500);\n" +
                         "" +
-                        "    // Exponer función para notificar que una página terminó (será llamada desde Android)\n" +
+                        "    // Exponer función para notificar que una página terminó\n" +
                         "    window.onPageReadComplete = function() {\n" +
                         "        var nextPage = parseInt(window.currentReadingPage) + 1;\n" +
                         "        var totalPages = Object.keys(window.allSpansByPage).length;\n" +
@@ -305,16 +350,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "            window.goToPage(nextPage);\n" +
                         "            setTimeout(function() {\n" +
                         "                window.currentReadingPage = nextPage;\n" +
-                        "                var pageData = window.getPageTextWithWords(nextPage);\n" +
-                        "                if (pageData && pageData.text.length > 0) {\n" +
-                        "                    var lengthsJson = pageData.lengths.join(',');\n" +
-                        "                    if (window.AndroidApp) {\n" +
-                        "                        window.AndroidApp.onStartPageRead(nextPage, pageData.text, lengthsJson);\n" +
-                        "                    }\n" +
-                        "                } else {\n" +
-                        "                    // No hay texto, pasar a siguiente\n" +
-                        "                    window.onPageReadComplete();\n" +
-                        "                }\n" +
+                        "                window.startReadingFromWordIndex(0);\n" +
                         "            }, 1000);\n" +
                         "        } else {\n" +
                         "            if (window.AndroidApp) window.AndroidApp.onReadingFinished();\n" +
@@ -322,7 +358,14 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         "    };\n" +
                         "})();";
 
-        webView.evaluateJavascript(js, null);
+        evaluateJavascript(js);
+    }
+
+    // Método público para ejecutar JavaScript desde WebAppInterface
+    public void evaluateJavascript(String script) {
+        if (webView != null) {
+            webView.evaluateJavascript(script, null);
+        }
     }
 
     // Métodos usados por WebAppInterface
@@ -348,6 +391,11 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     public void setCurrentFragmentOffset(int offset) {
         this.currentFragmentOffset = offset;
+    }
+
+    public void setStartWordIndex(int startWordIndex) {
+        this.currentStartWordIndex = startWordIndex;
+        Log.d(TAG, "currentStartWordIndex = " + startWordIndex);
     }
 
     @Override
@@ -382,7 +430,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
                 @Override
                 public void onDone(String utteranceId) {
-                    if (utteranceId.equals("test")) return;
+                    // No hacer nada aquí; la página completa se maneja en WebAppInterface
                 }
 
                 @Override
@@ -401,20 +449,21 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
                     int absoluteStart = currentFragmentOffset + start;
                     int accumulatedChars = 0;
-                    int targetWordIndex = -1;
+                    int targetWordIndexRelative = -1;
                     for (int i = 0; i < currentWordLengths.size(); i++) {
                         int wordLen = currentWordLengths.get(i);
                         int nextLimit = accumulatedChars + wordLen;
                         if (absoluteStart >= accumulatedChars && absoluteStart < nextLimit) {
-                            targetWordIndex = i;
+                            targetWordIndexRelative = i;
                             break;
                         }
                         accumulatedChars = nextLimit + 1;
                     }
 
-                    if (targetWordIndex != -1) {
+                    if (targetWordIndexRelative != -1) {
+                        int globalWordIndex = currentStartWordIndex + targetWordIndexRelative;
                         String pageNum = utteranceId.split("_")[1];
-                        evaluateJavaScript("window.highlightWordInPage(" + pageNum + ", " + targetWordIndex + ");");
+                        evaluateJavascript("window.highlightWordInPage(" + pageNum + ", " + globalWordIndex + ");");
                     }
                 }
             });
