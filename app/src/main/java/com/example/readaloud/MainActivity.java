@@ -11,11 +11,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.Toast;
-
+import androidx.appcompat.app.AppCompatActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.appcompat.app.AppCompatActivity;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -29,8 +27,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private TextToSpeech tts;
     private Button btnSelectPdf, btnReadAloud;
 
-    // Variables de sincronización (Públicas para que WebAppInterface las vea)
+    // Estado de sincronización
     public int globalOffsetIndex = 0;
+    public int currentReadingPage = 1;
     private List<Integer> currentWordMap = new ArrayList<>();
     private int lastHighlightedIndex = -1;
 
@@ -38,8 +37,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                    Uri uri = result.getData().getData();
-                    loadPdfInWebView(uri);
+                    loadPdfInWebView(result.getData().getData());
                 }
             }
     );
@@ -54,7 +52,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         btnReadAloud = findViewById(R.id.btnReadAloud);
 
         tts = new TextToSpeech(this, this);
-
         setupWebView();
 
         btnSelectPdf.setOnClickListener(v -> {
@@ -64,97 +61,100 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         });
 
         btnReadAloud.setOnClickListener(v -> {
-            // Lee toda la página actual desde el principio (índice 0)
+            // Empezar lectura desde la página actual del visor
             webView.evaluateJavascript("window.startReadingFrom(0);", null);
         });
     }
 
     private void setupWebView() {
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
-        settings.setAllowFileAccessFromFileURLs(true);
-        settings.setAllowUniversalAccessFromFileURLs(true);
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
+        s.setAllowFileAccessFromFileURLs(true);
+        s.setAllowUniversalAccessFromFileURLs(true);
 
-        // Conectamos el puente con el nombre "AndroidApp"
         webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
                 injectInteractionScript();
             }
         });
-
         webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html");
     }
 
     private void loadPdfInWebView(Uri uri) {
         try {
-            File tempFile = new File(getCacheDir(), "temp_viewer.pdf");
-            InputStream inputStream = getContentResolver().openInputStream(uri);
-            FileOutputStream outputStream = new FileOutputStream(tempFile);
-
+            File tempFile = new File(getCacheDir(), "temp.pdf");
+            InputStream is = getContentResolver().openInputStream(uri);
+            FileOutputStream fos = new FileOutputStream(tempFile);
             byte[] buffer = new byte[1024];
-            int length;
-            while ((length = inputStream.read(buffer)) > 0) {
-                outputStream.write(buffer, 0, length);
-            }
-            outputStream.close();
-            inputStream.close();
+            int l;
+            while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
+            fos.close(); is.close();
 
             webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
             btnReadAloud.setEnabled(true);
-
         } catch (Exception e) {
-            Log.e("PDF_LOAD", "Error: " + e.getMessage());
+            Log.e("PDF", "Error cargando: " + e.getMessage());
         }
     }
 
     private void injectInteractionScript() {
         String js =
-                // 1. Obtener spans de la página que el usuario está viendo
-                "window.getSpans = function() {" +
-                        "  var pageNum = window.PDFViewerApplication.page;" +
+                "window.getSpansOfPage = function(pageNum) {" +
                         "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
                         "  return container ? Array.from(container.querySelectorAll('span')) : [];" +
                         "};" +
 
-                        // 2. Iniciar lectura y enviar mapa de longitudes a Java
                         "window.startReadingFrom = function(startIndex) {" +
-                        "  var spans = window.getSpans();" +
-                        "  if (spans.length === 0) return;" +
+                        "  var pageNum = window.PDFViewerApplication.page;" +
+                        "  var spans = window.getSpansOfPage(pageNum);" +
+                        "  if (spans.length === 0) {" +
+                        "    console.log('Esperando renderizado...');" +
+                        "    setTimeout(() => window.startReadingFrom(startIndex), 500);" +
+                        "    return;" +
+                        "  }" +
                         "  var selection = spans.slice(startIndex);" +
                         "  var fullText = selection.map(s => s.innerText).join(' ');" +
                         "  var lengths = selection.map(s => s.innerText.length).join(',');" +
-                        "  if (window.AndroidApp) { window.AndroidApp.onStartContinuousRead(fullText, lengths, startIndex); }" +
+                        "  window.AndroidApp.onStartContinuousRead(fullText, lengths, startIndex, pageNum);" +
                         "};" +
 
-                        // 3. Función de resaltado con auto-scroll
-                        "window.highlightWord = function(index) {" +
-                        "  var spans = window.getSpans();" +
+                        "window.highlightWord = function(index, pageNum) {" +
+                        "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"]');" +
+                        "  if (!container) return;" +
+                        "  container.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
+                        "  var spans = container.querySelectorAll('.textLayer span');" +
                         "  var target = spans[index];" +
-                        "  if (!target) return;" +
-                        "  document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
-                        "  target.classList.add('reading-highlight');" +
-                        "  var rect = target.getBoundingClientRect();" +
-                        "  if (rect.bottom > window.innerHeight || rect.top < 0) {" +
-                        "    target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
+                        "  if (target) {" +
+                        "    target.classList.add('reading-highlight');" +
+                        "    var rect = target.getBoundingClientRect();" +
+                        "    if (rect.top < 0 || rect.bottom > window.innerHeight) target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
                         "  }" +
                         "};" +
 
-                        // 4. Detector de toques (mousedown es más rápido que click en móviles)
+                        "window.readNextPage = function() {" +
+                        "  var total = window.PDFViewerApplication.pagesCount;" +
+                        "  var current = window.PDFViewerApplication.page;" +
+                        "  if (current < total) {" +
+                        "    window.PDFViewerApplication.page = current + 1;" +
+                        "    setTimeout(() => window.startReadingFrom(0), 1000);" +
+                        "  }" +
+                        "};" +
+
                         "document.addEventListener('mousedown', function(e) {" +
                         "  if (e.target && e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
-                        "    var spans = window.getSpans();" +
+                        "    var pageEl = e.target.closest('.page');" +
+                        "    var pageNum = parseInt(pageEl.dataset.pageNumber);" +
+                        "    var spans = window.getSpansOfPage(pageNum);" +
                         "    var index = spans.indexOf(e.target);" +
-                        "    if (index !== -1) window.startReadingFrom(index);" +
+                        "    if (index !== -1) { window.PDFViewerApplication.page = pageNum; window.startReadingFrom(index); }" +
                         "  }" +
                         "}, true);" +
 
-                        // Estilos CSS
                         "var style = document.createElement('style');" +
                         "style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 2px; position: relative; z-index: 10; }';" +
                         "document.head.appendChild(style);";
@@ -162,10 +162,13 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         webView.evaluateJavascript(js, null);
     }
 
-    // MÉTODO QUE FALTABA: Recibe el mapa de palabras desde el puente
-    public void setWordMap(List<Integer> map) {
-        this.currentWordMap = map;
-        this.lastHighlightedIndex = -1; // Resetear para nueva lectura
+    public void setWordLengths(List<Integer> lengths) {
+        this.currentWordMap = lengths;
+        this.lastHighlightedIndex = -1;
+    }
+
+    public void setStartWordIndex(int index) {
+        this.globalOffsetIndex = index;
     }
 
     @Override
@@ -173,87 +176,44 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         if (status == TextToSpeech.SUCCESS) {
             tts.setLanguage(new Locale("es", "ES"));
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String utteranceId) {}
-                @Override public void onDone(String utteranceId) {}
+                @Override public void onStart(String utteranceId) {
+                    runOnUiThread(() -> btnReadAloud.setText("Pausar"));
+                }
+
+                @Override public void onDone(String utteranceId) {
+                    if ("READ_ID".equals(utteranceId)) {
+                        runOnUiThread(() -> webView.evaluateJavascript("window.readNextPage();", null));
+                    }
+                }
+
                 @Override public void onError(String utteranceId) {}
 
                 @Override
                 public void onRangeStart(String utteranceId, int start, int end, int frame) {
                     runOnUiThread(() -> {
                         if (currentWordMap.isEmpty()) return;
-
-                        int accumulated = 0;
+                        int acc = 0;
                         for (int i = 0; i < currentWordMap.size(); i++) {
-                            // El +1 es por el espacio que une las palabras en el .join(' ')
-                            int nextLimit = accumulated + currentWordMap.get(i) + 1;
-
-                            if (start >= accumulated && start < nextLimit) {
+                            int limit = acc + currentWordMap.get(i) + 1;
+                            if (start >= acc && start < limit) {
                                 if (i != lastHighlightedIndex) {
                                     lastHighlightedIndex = i;
-                                    // Índice absoluto = índice relativo de lectura + punto de inicio
-                                    int absoluteIndex = i + globalOffsetIndex;
-                                    webView.evaluateJavascript("window.highlightWord(" + absoluteIndex + ");", null);
+                                    webView.evaluateJavascript("window.highlightWord(" + (i + globalOffsetIndex) + ", " + currentReadingPage + ");", null);
                                 }
                                 break;
                             }
-                            accumulated = nextLimit;
+                            acc = limit;
                         }
                     });
                 }
             });
+            btnReadAloud.setText("Reproducir");
         }
     }
 
     @Override
     protected void onDestroy() {
-        if (tts != null) {
-            tts.stop();
-            tts.shutdown();
-        }
+        if (tts != null) { tts.stop(); tts.shutdown(); }
         super.onDestroy();
-    }
-
-    // --- AÑADE ESTOS MÉTODOS AL FINAL DE TU CLASE MAINACTIVITY ---
-
-    public void setWordLengths(List<Integer> lengths) {
-        this.currentWordMap = lengths;
-    }
-
-    public void setStartWordIndex(int index) {
-        this.globalOffsetIndex = index;
-    }
-
-    // Este ayuda a la sincronización fina de la palabra actual
-    public void setCurrentFragmentOffset(int offset) {
-        // Puedes dejarlo vacío por ahora o usarlo para depuración
-        Log.d("TTS", "Offset actual: " + offset);
-    }
-
-    // Un método genérico para mostrar errores que pide tu WebAppInterface
-    public void showError(String message) {
-        runOnUiThread(() ->
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-        );
-    }
-
-    // Controla si el botón debe decir "Play" o "Pause"
-    public void setReadingState(boolean isReading) {
-        runOnUiThread(() -> {
-            if (isReading) {
-                btnReadAloud.setText("Pausar");
-            } else {
-                btnReadAloud.setText("Reproducir");
-            }
-        });
-    }
-
-    // ESTE ES CRUCIAL: El puente no puede llamar a webView.evaluateJavascript directamente
-// así que le creamos este "túnel" de acceso.
-    public void evaluateJavascript(String script) {
-        runOnUiThread(() -> {
-            if (webView != null) {
-                webView.evaluateJavascript(script, null);
-            }
-        });
     }
 }
