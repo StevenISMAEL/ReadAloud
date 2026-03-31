@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#FFFFFF">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Configuración de Voz"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="20dp"/>
+
+    <TextView
+        android:id="@+id/lblSpeed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Velocidad: 1.0x"
+        android:textColor="#666666"/>
+    <com.google.android.material.slider.Slider
+        android:id="@+id/sliderSpeed"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:valueFrom="0.5"
+        android:valueTo="2.5"
+        android:value="1.0" />
+
+    <TextView
+        android:id="@+id/lblPitch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Tono: 1.0"
+        android:layout_marginTop="16dp"
+        android:textColor="#666666"/>
+    <com.google.android.material.slider.Slider
+        android:id="@+id/sliderPitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:valueFrom="0.5"
+        android:valueTo="1.5"
+        android:value="1.0" />
+
+    <Button
+        android:id="@+id/btnSaveSettings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Aplicar y Cerrar"
+        android:layout_marginTop="20dp"
+        style="@style/Widget.MaterialComponents.Button"/>
+</LinearLayout>

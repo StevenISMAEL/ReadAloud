@@ -2,6 +2,7 @@
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:fitsSystemWindows="true"
     android:background="#F5F5F5">
 
@@ -13,7 +14,15 @@
         android:padding="8dp"
         android:background="#FFFFFF"
         android:elevation="4dp">
-
+        <ImageButton
+            android:id="@+id/btnSettings"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@android:drawable/ic_menu_manage"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            app:tint="#444444"
+            android:layout_gravity="center"
+            android:contentDescription="Ajustes de voz" />
         <Button
             android:id="@+id/btnSelectPdf"
             android:layout_width="0dp"
@@ -42,6 +51,7 @@
             android:textAllCaps="false"
             android:layout_margin="2dp" />
     </LinearLayout>
+
 
     <LinearLayout
         android:id="@+id/recentContainer"

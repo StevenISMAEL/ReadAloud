@@ -16,6 +16,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -26,6 +27,9 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.google.android.material.bottomsheet.BottomSheetDialog;
+import com.google.android.material.slider.Slider;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -39,16 +43,19 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private WebView webView;
     private TextToSpeech tts;
     private Button btnSelectPdf, btnPlayPause, btnStop;
+    private ImageButton btnSettings;
     private RecyclerView rvRecent;
     private View recentContainer;
 
-    // Estado de lectura
+    // Estado de lectura y configuración
     public int currentReadingPage = 1;
     public int totalPagesInCurrentPdf = 0;
     public int globalOffsetIndex = 0;
     private List<Integer> currentWordMap = new ArrayList<>();
-    private int lastWordIndexInPage = 0; // Este es nuestro "puntero" de oro
+    private int lastWordIndexInPage = 0;
 
+    private float speechRate = 1.0f;
+    private float pitch = 1.0f;
     private boolean isPaused = false;
     private boolean isStoppedManually = true;
 
@@ -74,12 +81,14 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Enlace de vistas
         webView = findViewById(R.id.webView);
         recentContainer = findViewById(R.id.recentContainer);
         rvRecent = findViewById(R.id.rvRecent);
         btnSelectPdf = findViewById(R.id.btnSelectPdf);
         btnPlayPause = findViewById(R.id.btnPlayPause);
         btnStop = findViewById(R.id.btnStop);
+        btnSettings = findViewById(R.id.btnSettings);
 
         btnPlayPause.setEnabled(false);
         btnStop.setEnabled(false);
@@ -97,10 +106,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             pdfPickerLauncher.launch(intent);
         });
 
-        // MEJORA: Lógica de Play/Pausa con memoria de índice
         btnPlayPause.setOnClickListener(v -> {
             if (currentPdfUriStr == null) return;
-
             if (tts.isSpeaking()) {
                 isStoppedManually = true;
                 tts.stop();
@@ -108,31 +115,58 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 btnPlayPause.setText("Play");
             } else {
                 isStoppedManually = false;
-
-                // CRUCIAL: Si tenemos un índice guardado (> 0), forzamos la reanudación desde ahí
-                // aunque isPaused sea falso (como cuando recién cargamos el PDF de la lista)
                 if (lastWordIndexInPage > 0 || isPaused) {
                     webView.evaluateJavascript("if(window.resumeReading) window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
                 } else {
                     webView.evaluateJavascript("if(window.startReadingFrom) window.startReadingFrom(0);", null);
                 }
-
                 isPaused = false;
                 btnPlayPause.setText("Pausa");
             }
         });
 
         btnStop.setOnClickListener(v -> stopReading());
+
+        btnSettings.setOnClickListener(v -> showVoiceSettingsDialog());
     }
 
-    // El puente de JS activa esto. isStoppedManually = false permite saltar de página.
-    public void setStartWordIndex(int index) {
-        this.globalOffsetIndex = index;
-        this.isStoppedManually = false;
-        this.isPaused = false;
-    }
+    private void showVoiceSettingsDialog() {
+        BottomSheetDialog dialog = new BottomSheetDialog(this);
+        View v = getLayoutInflater().inflate(R.layout.layout_voice_settings, null);
 
-    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
+        Slider sliderSpeed = v.findViewById(R.id.sliderSpeed);
+        Slider sliderPitch = v.findViewById(R.id.sliderPitch);
+        TextView lblSpeed = v.findViewById(R.id.lblSpeed);
+        TextView lblPitch = v.findViewById(R.id.lblPitch);
+
+        sliderSpeed.setValue(speechRate);
+        sliderPitch.setValue(pitch);
+        lblSpeed.setText("Velocidad: " + String.format("%.1fx", speechRate));
+        lblPitch.setText("Tono: " + String.format("%.1f", pitch));
+
+        sliderSpeed.addOnChangeListener((s, value, fromUser) -> {
+            speechRate = value;
+            lblSpeed.setText("Velocidad: " + String.format("%.1fx", value));
+        });
+
+        sliderPitch.addOnChangeListener((s, value, fromUser) -> {
+            pitch = value;
+            lblPitch.setText("Tono: " + String.format("%.1f", value));
+        });
+
+        v.findViewById(R.id.btnSaveSettings).setOnClickListener(view -> {
+            tts.setSpeechRate(speechRate);
+            tts.setPitch(pitch);
+            if (tts.isSpeaking()) {
+                // Reiniciar lectura para aplicar cambios en tiempo real
+                webView.evaluateJavascript("window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
+            }
+            dialog.dismiss();
+        });
+
+        dialog.setContentView(v);
+        dialog.show();
+    }
 
     private void setupWebView() {
         WebSettings s = webView.getSettings();
@@ -162,7 +196,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "    var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
                 "    return container ? Array.from(container.querySelectorAll('span')) : [];" +
                 "  };" +
-
                 "  window.resumeReading = function(startIndex, savedPage) {" +
                 "    window.PDFViewerApplication.page = savedPage;" +
                 "    setTimeout(function() {" +
@@ -173,7 +206,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "      window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>(s.innerText||'').length).join(','), startIndex, savedPage, total);" +
                 "    }, 1000);" +
                 "  };" +
-
                 "  window.startReadingFrom = function(startIndex) {" +
                 "    var pageNum = window.PDFViewerApplication.page;" +
                 "    var spans = window.getSpansOfPage(pageNum);" +
@@ -182,7 +214,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "    var total = window.PDFViewerApplication.pagesCount;" +
                 "    window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>(s.innerText||'').length).join(','), startIndex, pageNum, total);" +
                 "  };" +
-
                 "  window.highlightWord = function(index, pageNum) {" +
                 "    document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
                 "    var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"]');" +
@@ -195,7 +226,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "      if (!isVisible) target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
                 "    }" +
                 "  };" +
-
                 "  window.readNextPage = function() {" +
                 "    var current = window.PDFViewerApplication.page;" +
                 "    if (current < window.PDFViewerApplication.pagesCount) {" +
@@ -204,7 +234,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "      setTimeout(function() { window.startReadingFrom(0); }, 1500);" +
                 "    }" +
                 "  };" +
-
                 "  document.addEventListener('mousedown', function(e) {" +
                 "    if (e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
                 "      var pageEl = e.target.closest('.page');" +
@@ -217,19 +246,28 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "      }" +
                 "    }" +
                 "  }, true);" +
-
                 "  var style = document.createElement('style');" +
                 "  style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 4px; position: relative; z-index: 10; }';" +
                 "  document.head.appendChild(style);" +
                 "})();";
-
         webView.evaluateJavascript(js, null);
     }
+
+    public void setStartWordIndex(int index) {
+        this.globalOffsetIndex = index;
+        this.isStoppedManually = false;
+        this.isPaused = false;
+        runOnUiThread(() -> btnPlayPause.setText("Pausa"));
+    }
+
+    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
 
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
             tts.setLanguage(new Locale("es", "ES"));
+            tts.setSpeechRate(speechRate);
+            tts.setPitch(pitch);
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                 @Override public void onStart(String utteranceId) {
                     runOnUiThread(() -> btnPlayPause.setText("Pausa"));
@@ -247,13 +285,10 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         for (int i = 0; i < currentWordMap.size(); i++) {
                             int limit = acc + currentWordMap.get(i) + 1;
                             if (start >= acc && start < limit) {
-                                // ACTUALIZAMOS EL PUNTERO EN TIEMPO REAL
                                 lastWordIndexInPage = i + globalOffsetIndex;
                                 webView.evaluateJavascript("if(window.highlightWord) window.highlightWord(" + lastWordIndexInPage + "," + currentReadingPage + ");", null);
                                 if (currentPdfUriStr != null) {
-                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(
-                                            currentPdfTitle, currentPdfUriStr, currentReadingPage, totalPagesInCurrentPdf, lastWordIndexInPage
-                                    ));
+                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(currentPdfTitle, currentPdfUriStr, currentReadingPage, totalPagesInCurrentPdf, lastWordIndexInPage));
                                 }
                                 break;
                             }
@@ -265,42 +300,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         }
     }
 
-    private void loadPdfInWebView(Uri uri, int page, int word, String title) {
-        try {
-            this.currentPdfUriStr = uri.toString();
-            this.currentPdfTitle = title;
-            this.currentReadingPage = page;
-            this.lastWordIndexInPage = word; // Restauramos el índice guardado
-
-            recentContainer.setVisibility(View.GONE);
-            webView.setVisibility(View.VISIBLE);
-
-            File tempFile = new File(getCacheDir(), "temp.pdf");
-            try (InputStream is = getContentResolver().openInputStream(uri);
-                 FileOutputStream fos = new FileOutputStream(tempFile)) {
-                byte[] buffer = new byte[1024];
-                int l;
-                while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
-            }
-            webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
-        } catch (Exception e) { Log.e("LOAD", e.getMessage()); }
-    }
-
-    private void stopReading() {
-        isStoppedManually = true;
-        if (tts != null) tts.stop();
-        isPaused = false;
-        // OJO: No borramos lastWordIndexInPage aquí para que se mantenga en la biblioteca
-        currentPdfUriStr = null;
-        btnPlayPause.setEnabled(false);
-        btnStop.setEnabled(false);
-        btnPlayPause.setText("Play");
-        webView.setVisibility(View.GONE);
-        recentContainer.setVisibility(View.VISIBLE);
-        refreshRecentList();
-    }
-
-    // Resto de métodos de apoyo (getFileName, refreshRecentList, RecentAdapter)
     @SuppressLint("Range")
     private String getFileName(Uri uri) {
         String result = null;
@@ -319,11 +318,41 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         return result;
     }
 
+    private void loadPdfInWebView(Uri uri, int page, int word, String title) {
+        try {
+            this.currentPdfUriStr = uri.toString();
+            this.currentPdfTitle = title;
+            this.currentReadingPage = page;
+            this.lastWordIndexInPage = word;
+            recentContainer.setVisibility(View.GONE);
+            webView.setVisibility(View.VISIBLE);
+            File tempFile = new File(getCacheDir(), "temp.pdf");
+            try (InputStream is = getContentResolver().openInputStream(uri);
+                 FileOutputStream fos = new FileOutputStream(tempFile)) {
+                byte[] buffer = new byte[1024];
+                int l;
+                while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
+            }
+            webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
+        } catch (Exception e) { Log.e("LOAD", e.getMessage()); }
+    }
+
+    private void stopReading() {
+        isStoppedManually = true;
+        if (tts != null) tts.stop();
+        isPaused = false;
+        currentPdfUriStr = null;
+        btnPlayPause.setEnabled(false);
+        btnStop.setEnabled(false);
+        btnPlayPause.setText("Play");
+        webView.setVisibility(View.GONE);
+        recentContainer.setVisibility(View.VISIBLE);
+        refreshRecentList();
+    }
+
     private void refreshRecentList() {
         List<RecentPdf> list = RecentManager.getRecentPdfs(this);
-        RecentAdapter adapter = new RecentAdapter(list, pdf -> {
-            loadPdfInWebView(Uri.parse(pdf.uriString), pdf.lastPage, pdf.lastWordIndex, pdf.title);
-        });
+        RecentAdapter adapter = new RecentAdapter(list, pdf -> loadPdfInWebView(Uri.parse(pdf.uriString), pdf.lastPage, pdf.lastWordIndex, pdf.title));
         rvRecent.setAdapter(adapter);
     }
 
@@ -342,10 +371,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             holder.info.setText("Página " + item.lastPage + (item.totalPages > 0 ? " de " + item.totalPages : ""));
             if (item.totalPages > 0) holder.progress.setProgress((int)((item.lastPage/(float)item.totalPages)*100));
             holder.itemView.setOnClickListener(v -> listener.onClick(item));
-            holder.btnDelete.setOnClickListener(v -> {
-                RecentManager.removePdf(MainActivity.this, item.uriString);
-                refreshRecentList();
-            });
+            holder.btnDelete.setOnClickListener(v -> { RecentManager.removePdf(MainActivity.this, item.uriString); refreshRecentList(); });
         }
         @Override public int getItemCount() { return items.size(); }
         class VH extends RecyclerView.ViewHolder {
