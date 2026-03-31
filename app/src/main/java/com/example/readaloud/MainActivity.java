@@ -1,7 +1,6 @@
 package com.example.readaloud;
 
 import android.annotation.SuppressLint;
-import android.content.ContentResolver;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -39,38 +38,36 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     private WebView webView;
     private TextToSpeech tts;
-    private Button btnSelectPdf, btnReadAloud, btnPause, btnStop;
+    private Button btnSelectPdf, btnPlayPause, btnStop;
     private RecyclerView rvRecent;
     private View recentContainer;
 
+    // Estado de lectura
     public int currentReadingPage = 1;
     public int totalPagesInCurrentPdf = 0;
     public int globalOffsetIndex = 0;
     private List<Integer> currentWordMap = new ArrayList<>();
     private int lastWordIndexInPage = 0;
+
+    // Banderas de la Máquina de Estados
     private boolean isPaused = false;
     private boolean isStoppedManually = true;
 
     private String currentPdfUriStr;
     private String currentPdfTitle;
 
+    // Selector de archivos con permisos persistentes
     private final ActivityResultLauncher<Intent> pdfPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                     Uri uri = result.getData().getData();
                     try {
-                        // 1. Extraer el nombre real del archivo
                         String realName = getFileName(uri);
-
-                        // 2. Pedir permiso persistente
                         getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-                        // 3. Cargar
                         loadPdfInWebView(uri, 1, 0, realName);
                     } catch (Exception e) {
-                        e.printStackTrace();
-                        Toast.makeText(this, "Error al obtener archivo", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Error al acceder al archivo", Toast.LENGTH_SHORT).show();
                     }
                 }
             }
@@ -81,12 +78,12 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Inicializar Vistas
         webView = findViewById(R.id.webView);
         recentContainer = findViewById(R.id.recentContainer);
         rvRecent = findViewById(R.id.rvRecent);
         btnSelectPdf = findViewById(R.id.btnSelectPdf);
-        btnReadAloud = findViewById(R.id.btnReadAloud);
-        btnPause = findViewById(R.id.btnPause);
+        btnPlayPause = findViewById(R.id.btnPlayPause);
         btnStop = findViewById(R.id.btnStop);
 
         tts = new TextToSpeech(this, this);
@@ -103,23 +100,24 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             pdfPickerLauncher.launch(intent);
         });
 
-        btnReadAloud.setOnClickListener(v -> {
-            isStoppedManually = false;
-            if (isPaused) {
-                webView.evaluateJavascript("window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
-                isPaused = false;
-            } else {
-                webView.evaluateJavascript("window.startReadingFrom(0);", null);
-            }
-        });
-
-        btnPause.setOnClickListener(v -> {
-            isStoppedManually = true;
+        // BOTÓN UNIFICADO: Play / Pausa / Reanudar
+        btnPlayPause.setOnClickListener(v -> {
             if (tts.isSpeaking()) {
+                // Estado: Sonando -> Acción: Pausar
+                isStoppedManually = true;
                 tts.stop();
                 isPaused = true;
-                btnReadAloud.setText("Reanudar");
-                updateUI(false);
+                btnPlayPause.setText("Reanudar");
+            } else {
+                // Estado: Detenido o Pausado -> Acción: Reproducir
+                isStoppedManually = false;
+                if (isPaused) {
+                    webView.evaluateJavascript("window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
+                    isPaused = false;
+                } else {
+                    webView.evaluateJavascript("window.startReadingFrom(0);", null);
+                }
+                btnPlayPause.setText("Pausa");
             }
         });
 
@@ -131,7 +129,14 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         });
     }
 
-    // MÉTODO PARA OBTENER EL NOMBRE REAL
+    private void setupWebView() {
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setAllowFileAccess(true);
+        s.setAllowUniversalAccessFromFileURLs(true);
+        webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
+    }
+
     @SuppressLint("Range")
     private String getFileName(Uri uri) {
         String result = null;
@@ -178,12 +183,11 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 }
             });
             webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
-            btnReadAloud.setEnabled(true);
+            btnPlayPause.setEnabled(true);
+            btnPlayPause.setText("Play");
+
         } catch (Exception e) {
-            Toast.makeText(this, "Error: PDF no accesible", Toast.LENGTH_LONG).show();
-            stopReading();
-            webView.setVisibility(View.GONE);
-            recentContainer.setVisibility(View.VISIBLE);
+            Toast.makeText(this, "Error al cargar el PDF", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -259,16 +263,8 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         if (tts != null) tts.stop();
         isPaused = false;
         lastWordIndexInPage = 0;
-        btnReadAloud.setText("Play");
-        updateUI(false);
-    }
-
-    public void updateUI(boolean reading) {
-        runOnUiThread(() -> {
-            btnReadAloud.setEnabled(!reading || isPaused);
-            btnPause.setEnabled(reading && !isPaused);
-            btnStop.setEnabled(reading || isPaused);
-        });
+        btnPlayPause.setText("Play");
+        webView.evaluateJavascript("document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));", null);
     }
 
     @Override
@@ -276,7 +272,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         if (status == TextToSpeech.SUCCESS) {
             tts.setLanguage(new Locale("es", "ES"));
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String utteranceId) { updateUI(true); }
+                @Override public void onStart(String utteranceId) {
+                    runOnUiThread(() -> btnPlayPause.setText("Pausa"));
+                }
                 @Override public void onDone(String utteranceId) {
                     if ("READ_ID".equals(utteranceId) && !isStoppedManually) {
                         runOnUiThread(() -> webView.evaluateJavascript("window.readNextPage();", null));
@@ -307,14 +305,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         }
     }
 
-    private void setupWebView() {
-        WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setAllowFileAccess(true);
-        s.setAllowUniversalAccessFromFileURLs(true);
-        webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
-    }
-
     private void refreshRecentList() {
         List<RecentPdf> list = RecentManager.getRecentPdfs(this);
         RecentAdapter adapter = new RecentAdapter(list, pdf -> {
@@ -329,53 +319,29 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onDestroy();
     }
 
+    // ADAPTER CON BORRADO
     private class RecentAdapter extends RecyclerView.Adapter<RecentAdapter.VH> {
         private final List<RecentPdf> items;
         private final OnPdfClickListener listener;
-
-        RecentAdapter(List<RecentPdf> items, OnPdfClickListener listener) {
-            this.items = items;
-            this.listener = listener;
-        }
-
+        RecentAdapter(List<RecentPdf> items, OnPdfClickListener listener) { this.items = items; this.listener = listener; }
         @NonNull @Override public VH onCreateViewHolder(@NonNull ViewGroup p, int t) {
             return new VH(LayoutInflater.from(p.getContext()).inflate(R.layout.item_recent_pdf, p, false));
         }
-
         @Override public void onBindViewHolder(@NonNull VH holder, int p) {
             RecentPdf item = items.get(p);
             holder.title.setText(item.title);
             holder.info.setText("Página " + item.lastPage + (item.totalPages > 0 ? " de " + item.totalPages : ""));
-
-            if (item.totalPages > 0) {
-                holder.progress.setProgress((int)((item.lastPage/(float)item.totalPages)*100));
-            }
-
-            // Clic normal para abrir
+            if (item.totalPages > 0) holder.progress.setProgress((int)((item.lastPage/(float)item.totalPages)*100));
             holder.itemView.setOnClickListener(v -> listener.onClick(item));
-
-            // CLIC PARA BORRAR
             holder.btnDelete.setOnClickListener(v -> {
                 RecentManager.removePdf(MainActivity.this, item.uriString);
-                refreshRecentList(); // Refrescamos la lista para que desaparezca
-                Toast.makeText(MainActivity.this, "Eliminado de recientes", Toast.LENGTH_SHORT).show();
+                refreshRecentList();
             });
         }
-
         @Override public int getItemCount() { return items.size(); }
-
         class VH extends RecyclerView.ViewHolder {
-            TextView title, info;
-            ProgressBar progress;
-            View btnDelete; // Nueva vista
-
-            VH(View v) {
-                super(v);
-                title = v.findViewById(R.id.tvTitle);
-                info = v.findViewById(R.id.tvInfo);
-                progress = v.findViewById(R.id.pbReadProgress);
-                btnDelete = v.findViewById(R.id.btnDelete); // Vincular botón
-            }
+            TextView title, info; ProgressBar progress; View btnDelete;
+            VH(View v) { super(v); title = v.findViewById(R.id.tvTitle); info = v.findViewById(R.id.tvInfo); progress = v.findViewById(R.id.pbReadProgress); btnDelete = v.findViewById(R.id.btnDelete); }
         }
     }
     interface OnPdfClickListener { void onClick(RecentPdf pdf); }

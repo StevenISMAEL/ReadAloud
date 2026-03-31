@@ -12,8 +12,7 @@
         android:orientation="horizontal"
         android:padding="8dp"
         android:background="#FFFFFF"
-        android:elevation="4dp"
-        android:gravity="center">
+        android:elevation="4dp">
 
         <Button
             android:id="@+id/btnSelectPdf"
@@ -25,21 +24,12 @@
             android:layout_margin="2dp" />
 
         <Button
-            android:id="@+id/btnReadAloud"
+            android:id="@+id/btnPlayPause"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="1.2"
+            android:layout_weight="1.5"
             android:text="Play"
             android:enabled="false"
-            android:textAllCaps="false"
-            android:layout_margin="2dp" />
-
-        <Button
-            android:id="@+id/btnPause"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Pausa"
             android:textAllCaps="false"
             android:layout_margin="2dp" />
 
