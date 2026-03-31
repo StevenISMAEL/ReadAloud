@@ -42,11 +42,12 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private RecyclerView rvRecent;
     private View recentContainer;
 
+    // Estado de lectura
     public int currentReadingPage = 1;
     public int totalPagesInCurrentPdf = 0;
     public int globalOffsetIndex = 0;
     private List<Integer> currentWordMap = new ArrayList<>();
-    private int lastWordIndexInPage = 0;
+    private int lastWordIndexInPage = 0; // Este es nuestro "puntero" de oro
 
     private boolean isPaused = false;
     private boolean isStoppedManually = true;
@@ -63,9 +64,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         String realName = getFileName(uri);
                         getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         loadPdfInWebView(uri, 1, 0, realName);
-                    } catch (Exception e) {
-                        Log.e("PDF_PICKER", "Error: " + e.getMessage());
-                    }
+                    } catch (Exception e) { Log.e("PICKER", e.getMessage()); }
                 }
             }
     );
@@ -95,12 +94,13 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("application/pdf");
-            intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
             pdfPickerLauncher.launch(intent);
         });
 
+        // MEJORA: Lógica de Play/Pausa con memoria de índice
         btnPlayPause.setOnClickListener(v -> {
             if (currentPdfUriStr == null) return;
+
             if (tts.isSpeaking()) {
                 isStoppedManually = true;
                 tts.stop();
@@ -108,12 +108,16 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 btnPlayPause.setText("Play");
             } else {
                 isStoppedManually = false;
-                if (isPaused) {
-                    webView.evaluateJavascript("if(window.resumeReading) { window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + "); } else { window.AndroidApp.showError('Sincronizando visor...'); }", null);
-                    isPaused = false;
+
+                // CRUCIAL: Si tenemos un índice guardado (> 0), forzamos la reanudación desde ahí
+                // aunque isPaused sea falso (como cuando recién cargamos el PDF de la lista)
+                if (lastWordIndexInPage > 0 || isPaused) {
+                    webView.evaluateJavascript("if(window.resumeReading) window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
                 } else {
-                    webView.evaluateJavascript("if(window.startReadingFrom) { window.startReadingFrom(0); } else { window.AndroidApp.showError('Sincronizando visor...'); }", null);
+                    webView.evaluateJavascript("if(window.startReadingFrom) window.startReadingFrom(0);", null);
                 }
+
+                isPaused = false;
                 btnPlayPause.setText("Pausa");
             }
         });
@@ -121,19 +125,27 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         btnStop.setOnClickListener(v -> stopReading());
     }
 
+    // El puente de JS activa esto. isStoppedManually = false permite saltar de página.
+    public void setStartWordIndex(int index) {
+        this.globalOffsetIndex = index;
+        this.isStoppedManually = false;
+        this.isPaused = false;
+    }
+
+    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
+
     private void setupWebView() {
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setAllowFileAccess(true);
         s.setAllowUniversalAccessFromFileURLs(true);
-        s.setDomStorageEnabled(true); // Necesario para PDF.js
+        s.setDomStorageEnabled(true);
 
         webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
-                // Inyectamos el script después de un breve delay para que el visor cargue sus objetos
                 webView.postDelayed(() -> injectInteractionScript(), 800);
                 if (currentPdfUriStr != null) {
                     btnPlayPause.setEnabled(true);
@@ -145,7 +157,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     }
 
     private void injectInteractionScript() {
-        // Script unificado y limpio para evitar SyntaxErrors
         String js = "(function() {" +
                 "  window.getSpansOfPage = function(pageNum) {" +
                 "    var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
@@ -153,25 +164,23 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "  };" +
 
                 "  window.resumeReading = function(startIndex, savedPage) {" +
-                "    if (!window.PDFViewerApplication) return;" +
                 "    window.PDFViewerApplication.page = savedPage;" +
                 "    setTimeout(function() {" +
                 "      var spans = window.getSpansOfPage(savedPage);" +
                 "      if (spans.length === 0) { window.resumeReading(startIndex, savedPage); return; }" +
                 "      var selection = spans.slice(startIndex);" +
                 "      var total = window.PDFViewerApplication.pagesCount;" +
-                "      window.AndroidApp.onStartContinuousRead(selection.map(s => s.innerText).join(' '), selection.map(s => (s.innerText || '').length).join(','), startIndex, savedPage, total);" +
+                "      window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>(s.innerText||'').length).join(','), startIndex, savedPage, total);" +
                 "    }, 1000);" +
                 "  };" +
 
                 "  window.startReadingFrom = function(startIndex) {" +
-                "    if (!window.PDFViewerApplication) return;" +
                 "    var pageNum = window.PDFViewerApplication.page;" +
                 "    var spans = window.getSpansOfPage(pageNum);" +
                 "    if (spans.length === 0) { setTimeout(function() { window.startReadingFrom(startIndex); }, 800); return; }" +
                 "    var selection = spans.slice(startIndex);" +
                 "    var total = window.PDFViewerApplication.pagesCount;" +
-                "    window.AndroidApp.onStartContinuousRead(selection.map(s => s.innerText).join(' '), selection.map(s => (s.innerText || '').length).join(','), startIndex, pageNum, total);" +
+                "    window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>(s.innerText||'').length).join(','), startIndex, pageNum, total);" +
                 "  };" +
 
                 "  window.highlightWord = function(index, pageNum) {" +
@@ -188,13 +197,11 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "  };" +
 
                 "  window.readNextPage = function() {" +
-                "    if (!window.PDFViewerApplication) return;" +
                 "    var current = window.PDFViewerApplication.page;" +
-                "    var total = window.PDFViewerApplication.pagesCount;" +
-                "    if (current < total) {" +
+                "    if (current < window.PDFViewerApplication.pagesCount) {" +
                 "      document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
                 "      window.PDFViewerApplication.page = current + 1;" +
-                "      setTimeout(function() { window.startReadingFrom(0); }, 2000);" +
+                "      setTimeout(function() { window.startReadingFrom(0); }, 1500);" +
                 "    }" +
                 "  };" +
 
@@ -204,9 +211,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 "      var pageNum = parseInt(pageEl.dataset.pageNumber);" +
                 "      var spans = Array.from(pageEl.querySelectorAll('span'));" +
                 "      var index = spans.indexOf(e.target);" +
-                "      if (index !== -1) {" +
+                "      if (index !== -1) { " +
                 "         window.PDFViewerApplication.page = pageNum;" +
-                "         window.startReadingFrom(index);" +
+                "         window.startReadingFrom(index); " +
                 "      }" +
                 "    }" +
                 "  }, true);" +
@@ -218,16 +225,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
         webView.evaluateJavascript(js, null);
     }
-
-    // Reactiva el sistema automático cuando el usuario toca el texto (Error detectado resuelto)
-    public void setStartWordIndex(int index) {
-        this.globalOffsetIndex = index;
-        this.isStoppedManually = false;
-        this.isPaused = false;
-        runOnUiThread(() -> btnPlayPause.setText("Pausa"));
-    }
-
-    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
 
     @Override
     public void onInit(int status) {
@@ -250,6 +247,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                         for (int i = 0; i < currentWordMap.size(); i++) {
                             int limit = acc + currentWordMap.get(i) + 1;
                             if (start >= acc && start < limit) {
+                                // ACTUALIZAMOS EL PUNTERO EN TIEMPO REAL
                                 lastWordIndexInPage = i + globalOffsetIndex;
                                 webView.evaluateJavascript("if(window.highlightWord) window.highlightWord(" + lastWordIndexInPage + "," + currentReadingPage + ");", null);
                                 if (currentPdfUriStr != null) {
@@ -267,6 +265,42 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         }
     }
 
+    private void loadPdfInWebView(Uri uri, int page, int word, String title) {
+        try {
+            this.currentPdfUriStr = uri.toString();
+            this.currentPdfTitle = title;
+            this.currentReadingPage = page;
+            this.lastWordIndexInPage = word; // Restauramos el índice guardado
+
+            recentContainer.setVisibility(View.GONE);
+            webView.setVisibility(View.VISIBLE);
+
+            File tempFile = new File(getCacheDir(), "temp.pdf");
+            try (InputStream is = getContentResolver().openInputStream(uri);
+                 FileOutputStream fos = new FileOutputStream(tempFile)) {
+                byte[] buffer = new byte[1024];
+                int l;
+                while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
+            }
+            webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
+        } catch (Exception e) { Log.e("LOAD", e.getMessage()); }
+    }
+
+    private void stopReading() {
+        isStoppedManually = true;
+        if (tts != null) tts.stop();
+        isPaused = false;
+        // OJO: No borramos lastWordIndexInPage aquí para que se mantenga en la biblioteca
+        currentPdfUriStr = null;
+        btnPlayPause.setEnabled(false);
+        btnStop.setEnabled(false);
+        btnPlayPause.setText("Play");
+        webView.setVisibility(View.GONE);
+        recentContainer.setVisibility(View.VISIBLE);
+        refreshRecentList();
+    }
+
+    // Resto de métodos de apoyo (getFileName, refreshRecentList, RecentAdapter)
     @SuppressLint("Range")
     private String getFileName(Uri uri) {
         String result = null;
@@ -285,42 +319,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         return result;
     }
 
-    private void loadPdfInWebView(Uri uri, int page, int word, String title) {
-        try {
-            this.currentPdfUriStr = uri.toString();
-            this.currentPdfTitle = title;
-            this.currentReadingPage = page;
-            this.lastWordIndexInPage = word;
-
-            recentContainer.setVisibility(View.GONE);
-            webView.setVisibility(View.VISIBLE);
-
-            File tempFile = new File(getCacheDir(), "temp.pdf");
-            try (InputStream is = getContentResolver().openInputStream(uri);
-                 FileOutputStream fos = new FileOutputStream(tempFile)) {
-                byte[] buffer = new byte[1024];
-                int l;
-                while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
-            }
-            // Cargamos el visor. El script se inyectará en onPageFinished automáticamente.
-            webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
-        } catch (Exception e) { Log.e("LOAD", e.getMessage()); }
-    }
-
-    private void stopReading() {
-        isStoppedManually = true;
-        if (tts != null) tts.stop();
-        isPaused = false;
-        lastWordIndexInPage = 0;
-        currentPdfUriStr = null;
-        btnPlayPause.setEnabled(false);
-        btnStop.setEnabled(false);
-        btnPlayPause.setText("Play");
-        webView.setVisibility(View.GONE);
-        recentContainer.setVisibility(View.VISIBLE);
-        refreshRecentList();
-    }
-
     private void refreshRecentList() {
         List<RecentPdf> list = RecentManager.getRecentPdfs(this);
         RecentAdapter adapter = new RecentAdapter(list, pdf -> {
@@ -330,10 +328,6 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     }
 
     @Override protected void onDestroy() { if (tts != null) { tts.stop(); tts.shutdown(); } super.onDestroy(); }
-
-    public void showError(String msg) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
-    }
 
     private class RecentAdapter extends RecyclerView.Adapter<RecentAdapter.VH> {
         private final List<RecentPdf> items;
