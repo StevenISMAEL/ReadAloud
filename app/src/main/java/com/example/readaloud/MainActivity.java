@@ -42,32 +42,29 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
     private RecyclerView rvRecent;
     private View recentContainer;
 
-    // Estado de lectura
     public int currentReadingPage = 1;
     public int totalPagesInCurrentPdf = 0;
     public int globalOffsetIndex = 0;
     private List<Integer> currentWordMap = new ArrayList<>();
     private int lastWordIndexInPage = 0;
 
-    // Banderas de la Máquina de Estados
     private boolean isPaused = false;
     private boolean isStoppedManually = true;
 
-    private String currentPdfUriStr;
+    private String currentPdfUriStr = null;
     private String currentPdfTitle;
 
-    // Selector de archivos con permisos persistentes
     private final ActivityResultLauncher<Intent> pdfPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
-                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                if (result.getResultCode() == RESULT_OK && result.getData() != null && result.getData().getData() != null) {
                     Uri uri = result.getData().getData();
                     try {
                         String realName = getFileName(uri);
                         getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
                         loadPdfInWebView(uri, 1, 0, realName);
                     } catch (Exception e) {
-                        Toast.makeText(this, "Error al acceder al archivo", Toast.LENGTH_SHORT).show();
+                        Log.e("PDF_PICKER", "Error: " + e.getMessage());
                     }
                 }
             }
@@ -78,13 +75,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Inicializar Vistas
         webView = findViewById(R.id.webView);
         recentContainer = findViewById(R.id.recentContainer);
         rvRecent = findViewById(R.id.rvRecent);
         btnSelectPdf = findViewById(R.id.btnSelectPdf);
         btnPlayPause = findViewById(R.id.btnPlayPause);
         btnStop = findViewById(R.id.btnStop);
+
+        btnPlayPause.setEnabled(false);
+        btnStop.setEnabled(false);
 
         tts = new TextToSpeech(this, this);
         setupWebView();
@@ -100,33 +99,26 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
             pdfPickerLauncher.launch(intent);
         });
 
-        // BOTÓN UNIFICADO: Play / Pausa / Reanudar
         btnPlayPause.setOnClickListener(v -> {
+            if (currentPdfUriStr == null) return;
             if (tts.isSpeaking()) {
-                // Estado: Sonando -> Acción: Pausar
                 isStoppedManually = true;
                 tts.stop();
                 isPaused = true;
-                btnPlayPause.setText("Reanudar");
+                btnPlayPause.setText("Play");
             } else {
-                // Estado: Detenido o Pausado -> Acción: Reproducir
                 isStoppedManually = false;
                 if (isPaused) {
-                    webView.evaluateJavascript("window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + ");", null);
+                    webView.evaluateJavascript("if(window.resumeReading) { window.resumeReading(" + lastWordIndexInPage + ", " + currentReadingPage + "); } else { window.AndroidApp.showError('Sincronizando visor...'); }", null);
                     isPaused = false;
                 } else {
-                    webView.evaluateJavascript("window.startReadingFrom(0);", null);
+                    webView.evaluateJavascript("if(window.startReadingFrom) { window.startReadingFrom(0); } else { window.AndroidApp.showError('Sincronizando visor...'); }", null);
                 }
                 btnPlayPause.setText("Pausa");
             }
         });
 
-        btnStop.setOnClickListener(v -> {
-            stopReading();
-            webView.setVisibility(View.GONE);
-            recentContainer.setVisibility(View.VISIBLE);
-            refreshRecentList();
-        });
+        btnStop.setOnClickListener(v -> stopReading());
     }
 
     private void setupWebView() {
@@ -134,7 +126,145 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         s.setJavaScriptEnabled(true);
         s.setAllowFileAccess(true);
         s.setAllowUniversalAccessFromFileURLs(true);
+        s.setDomStorageEnabled(true); // Necesario para PDF.js
+
         webView.addJavascriptInterface(new WebAppInterface(this, tts), "AndroidApp");
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // Inyectamos el script después de un breve delay para que el visor cargue sus objetos
+                webView.postDelayed(() -> injectInteractionScript(), 800);
+                if (currentPdfUriStr != null) {
+                    btnPlayPause.setEnabled(true);
+                    btnStop.setEnabled(true);
+                }
+            }
+        });
+        webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html");
+    }
+
+    private void injectInteractionScript() {
+        // Script unificado y limpio para evitar SyntaxErrors
+        String js = "(function() {" +
+                "  window.getSpansOfPage = function(pageNum) {" +
+                "    var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
+                "    return container ? Array.from(container.querySelectorAll('span')) : [];" +
+                "  };" +
+
+                "  window.resumeReading = function(startIndex, savedPage) {" +
+                "    if (!window.PDFViewerApplication) return;" +
+                "    window.PDFViewerApplication.page = savedPage;" +
+                "    setTimeout(function() {" +
+                "      var spans = window.getSpansOfPage(savedPage);" +
+                "      if (spans.length === 0) { window.resumeReading(startIndex, savedPage); return; }" +
+                "      var selection = spans.slice(startIndex);" +
+                "      var total = window.PDFViewerApplication.pagesCount;" +
+                "      window.AndroidApp.onStartContinuousRead(selection.map(s => s.innerText).join(' '), selection.map(s => (s.innerText || '').length).join(','), startIndex, savedPage, total);" +
+                "    }, 1000);" +
+                "  };" +
+
+                "  window.startReadingFrom = function(startIndex) {" +
+                "    if (!window.PDFViewerApplication) return;" +
+                "    var pageNum = window.PDFViewerApplication.page;" +
+                "    var spans = window.getSpansOfPage(pageNum);" +
+                "    if (spans.length === 0) { setTimeout(function() { window.startReadingFrom(startIndex); }, 800); return; }" +
+                "    var selection = spans.slice(startIndex);" +
+                "    var total = window.PDFViewerApplication.pagesCount;" +
+                "    window.AndroidApp.onStartContinuousRead(selection.map(s => s.innerText).join(' '), selection.map(s => (s.innerText || '').length).join(','), startIndex, pageNum, total);" +
+                "  };" +
+
+                "  window.highlightWord = function(index, pageNum) {" +
+                "    document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
+                "    var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"]');" +
+                "    if (!container) return;" +
+                "    var target = container.querySelectorAll('.textLayer span')[index];" +
+                "    if (target) {" +
+                "      target.classList.add('reading-highlight');" +
+                "      var rect = target.getBoundingClientRect();" +
+                "      var isVisible = (rect.top >= 0 && rect.bottom <= window.innerHeight);" +
+                "      if (!isVisible) target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
+                "    }" +
+                "  };" +
+
+                "  window.readNextPage = function() {" +
+                "    if (!window.PDFViewerApplication) return;" +
+                "    var current = window.PDFViewerApplication.page;" +
+                "    var total = window.PDFViewerApplication.pagesCount;" +
+                "    if (current < total) {" +
+                "      document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
+                "      window.PDFViewerApplication.page = current + 1;" +
+                "      setTimeout(function() { window.startReadingFrom(0); }, 2000);" +
+                "    }" +
+                "  };" +
+
+                "  document.addEventListener('mousedown', function(e) {" +
+                "    if (e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
+                "      var pageEl = e.target.closest('.page');" +
+                "      var pageNum = parseInt(pageEl.dataset.pageNumber);" +
+                "      var spans = Array.from(pageEl.querySelectorAll('span'));" +
+                "      var index = spans.indexOf(e.target);" +
+                "      if (index !== -1) {" +
+                "         window.PDFViewerApplication.page = pageNum;" +
+                "         window.startReadingFrom(index);" +
+                "      }" +
+                "    }" +
+                "  }, true);" +
+
+                "  var style = document.createElement('style');" +
+                "  style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 4px; position: relative; z-index: 10; }';" +
+                "  document.head.appendChild(style);" +
+                "})();";
+
+        webView.evaluateJavascript(js, null);
+    }
+
+    // Reactiva el sistema automático cuando el usuario toca el texto (Error detectado resuelto)
+    public void setStartWordIndex(int index) {
+        this.globalOffsetIndex = index;
+        this.isStoppedManually = false;
+        this.isPaused = false;
+        runOnUiThread(() -> btnPlayPause.setText("Pausa"));
+    }
+
+    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
+
+    @Override
+    public void onInit(int status) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts.setLanguage(new Locale("es", "ES"));
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String utteranceId) {
+                    runOnUiThread(() -> btnPlayPause.setText("Pausa"));
+                }
+                @Override public void onDone(String utteranceId) {
+                    if ("READ_ID".equals(utteranceId) && !isStoppedManually) {
+                        runOnUiThread(() -> webView.evaluateJavascript("if(window.readNextPage) window.readNextPage();", null));
+                    }
+                }
+                @Override public void onError(String utteranceId) {}
+                @Override public void onRangeStart(String utteranceId, int start, int end, int frame) {
+                    runOnUiThread(() -> {
+                        if (currentWordMap.isEmpty()) return;
+                        int acc = 0;
+                        for (int i = 0; i < currentWordMap.size(); i++) {
+                            int limit = acc + currentWordMap.get(i) + 1;
+                            if (start >= acc && start < limit) {
+                                lastWordIndexInPage = i + globalOffsetIndex;
+                                webView.evaluateJavascript("if(window.highlightWord) window.highlightWord(" + lastWordIndexInPage + "," + currentReadingPage + ");", null);
+                                if (currentPdfUriStr != null) {
+                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(
+                                            currentPdfTitle, currentPdfUriStr, currentReadingPage, totalPagesInCurrentPdf, lastWordIndexInPage
+                                    ));
+                                }
+                                break;
+                            }
+                            acc = limit;
+                        }
+                    });
+                }
+            });
+        }
     }
 
     @SuppressLint("Range")
@@ -172,137 +302,23 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                 int l;
                 while ((l = is.read(buffer)) > 0) fos.write(buffer, 0, l);
             }
-
-            webView.setWebViewClient(new WebViewClient() {
-                @Override
-                public void onPageFinished(WebView view, String url) {
-                    injectInteractionScript();
-                    if (page > 1) {
-                        webView.evaluateJavascript("window.PDFViewerApplication.page = " + page, null);
-                    }
-                }
-            });
+            // Cargamos el visor. El script se inyectará en onPageFinished automáticamente.
             webView.loadUrl("file:///android_asset/pdfjs/web/viewer.html?file=" + tempFile.getAbsolutePath());
-            btnPlayPause.setEnabled(true);
-            btnPlayPause.setText("Play");
-
-        } catch (Exception e) {
-            Toast.makeText(this, "Error al cargar el PDF", Toast.LENGTH_SHORT).show();
-        }
+        } catch (Exception e) { Log.e("LOAD", e.getMessage()); }
     }
-
-    private void injectInteractionScript() {
-        String js =
-                "window.getSpansOfPage = function(pageNum) {" +
-                        "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"] .textLayer');" +
-                        "  return container ? Array.from(container.querySelectorAll('span')) : [];" +
-                        "};" +
-
-                        "window.resumeReading = function(startIndex, savedPage) {" +
-                        "  window.PDFViewerApplication.page = savedPage;" +
-                        "  setTimeout(() => {" +
-                        "    var spans = window.getSpansOfPage(savedPage);" +
-                        "    if (spans.length === 0) { window.resumeReading(startIndex, savedPage); return; }" +
-                        "    var selection = spans.slice(startIndex);" +
-                        "    var total = window.PDFViewerApplication.pagesCount;" +
-                        "    window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>s.innerText.length).join(','), startIndex, savedPage, total);" +
-                        "  }, 600);" +
-                        "};" +
-
-                        "window.startReadingFrom = function(startIndex) {" +
-                        "  var pageNum = window.PDFViewerApplication.page;" +
-                        "  var spans = window.getSpansOfPage(pageNum);" +
-                        "  if (spans.length === 0) { setTimeout(() => window.startReadingFrom(startIndex), 500); return; }" +
-                        "  var selection = spans.slice(startIndex);" +
-                        "  var total = window.PDFViewerApplication.pagesCount;" +
-                        "  window.AndroidApp.onStartContinuousRead(selection.map(s=>s.innerText).join(' '), selection.map(s=>s.innerText.length).join(','), startIndex, pageNum, total);" +
-                        "};" +
-
-                        "window.highlightWord = function(index, pageNum) {" +
-                        "  var container = document.querySelector('.page[data-page-number=\"' + pageNum + '\"]');" +
-                        "  if (!container) return;" +
-                        "  container.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));" +
-                        "  var target = container.querySelectorAll('.textLayer span')[index];" +
-                        "  if (target) {" +
-                        "    target.classList.add('reading-highlight');" +
-                        "    var rect = target.getBoundingClientRect();" +
-                        "    if (rect.top < 0 || rect.bottom > window.innerHeight) target.scrollIntoView({behavior: 'smooth', block: 'center'});" +
-                        "  }" +
-                        "};" +
-
-                        "window.readNextPage = function() {" +
-                        "  var current = window.PDFViewerApplication.page;" +
-                        "  if (current < window.PDFViewerApplication.pagesCount) {" +
-                        "    window.PDFViewerApplication.page = current + 1;" +
-                        "    setTimeout(() => window.startReadingFrom(0), 1200);" +
-                        "  }" +
-                        "};" +
-
-                        "document.addEventListener('mousedown', function(e) {" +
-                        "  if (e.target.tagName === 'SPAN' && e.target.closest('.textLayer')) {" +
-                        "    var pageEl = e.target.closest('.page');" +
-                        "    var pageNum = parseInt(pageEl.dataset.pageNumber);" +
-                        "    var spans = Array.from(pageEl.querySelectorAll('span'));" +
-                        "    var index = spans.indexOf(e.target);" +
-                        "    if (index !== -1) { window.PDFViewerApplication.page = pageNum; window.startReadingFrom(index); }" +
-                        "  }" +
-                        "}, true);" +
-
-                        "var style = document.createElement('style');" +
-                        "style.innerHTML = '.reading-highlight { background-color: #FFF176 !important; color: black !important; border-radius: 4px; position: relative; z-index: 10; }';" +
-                        "document.head.appendChild(style);";
-
-        webView.evaluateJavascript(js, null);
-    }
-
-    public void setWordLengths(List<Integer> lengths) { this.currentWordMap = lengths; }
-    public void setStartWordIndex(int index) { this.globalOffsetIndex = index; }
 
     private void stopReading() {
         isStoppedManually = true;
         if (tts != null) tts.stop();
         isPaused = false;
         lastWordIndexInPage = 0;
+        currentPdfUriStr = null;
+        btnPlayPause.setEnabled(false);
+        btnStop.setEnabled(false);
         btnPlayPause.setText("Play");
-        webView.evaluateJavascript("document.querySelectorAll('.reading-highlight').forEach(el => el.classList.remove('reading-highlight'));", null);
-    }
-
-    @Override
-    public void onInit(int status) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(new Locale("es", "ES"));
-            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String utteranceId) {
-                    runOnUiThread(() -> btnPlayPause.setText("Pausa"));
-                }
-                @Override public void onDone(String utteranceId) {
-                    if ("READ_ID".equals(utteranceId) && !isStoppedManually) {
-                        runOnUiThread(() -> webView.evaluateJavascript("window.readNextPage();", null));
-                    }
-                }
-                @Override public void onError(String utteranceId) {}
-                @Override public void onRangeStart(String utteranceId, int start, int end, int frame) {
-                    runOnUiThread(() -> {
-                        if (currentWordMap.isEmpty()) return;
-                        int acc = 0;
-                        for (int i = 0; i < currentWordMap.size(); i++) {
-                            int limit = acc + currentWordMap.get(i) + 1;
-                            if (start >= acc && start < limit) {
-                                lastWordIndexInPage = i + globalOffsetIndex;
-                                webView.evaluateJavascript("window.highlightWord(" + lastWordIndexInPage + "," + currentReadingPage + ")", null);
-                                if (currentPdfUriStr != null) {
-                                    RecentManager.savePdf(MainActivity.this, new RecentPdf(
-                                            currentPdfTitle, currentPdfUriStr, currentReadingPage, totalPagesInCurrentPdf, lastWordIndexInPage
-                                    ));
-                                }
-                                break;
-                            }
-                            acc = limit;
-                        }
-                    });
-                }
-            });
-        }
+        webView.setVisibility(View.GONE);
+        recentContainer.setVisibility(View.VISIBLE);
+        refreshRecentList();
     }
 
     private void refreshRecentList() {
@@ -313,13 +329,12 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         rvRecent.setAdapter(adapter);
     }
 
-    @Override
-    protected void onDestroy() {
-        if (tts != null) { tts.stop(); tts.shutdown(); }
-        super.onDestroy();
+    @Override protected void onDestroy() { if (tts != null) { tts.stop(); tts.shutdown(); } super.onDestroy(); }
+
+    public void showError(String msg) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
     }
 
-    // ADAPTER CON BORRADO
     private class RecentAdapter extends RecyclerView.Adapter<RecentAdapter.VH> {
         private final List<RecentPdf> items;
         private final OnPdfClickListener listener;
