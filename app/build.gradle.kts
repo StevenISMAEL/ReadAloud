@@ -44,9 +44,6 @@ dependencies {
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
 
-    // El motor de renderizado nativo (basado en Pdfium)
-    implementation("com.github.barteksc:android-pdf-viewer:2.8.2")
-
-    // PdfBox para extraer coordenadas (ya la tenías)
+    implementation("com.github.mhiew:android-pdf-viewer:3.2.0-beta.3")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }

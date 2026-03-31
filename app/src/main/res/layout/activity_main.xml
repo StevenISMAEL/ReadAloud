@@ -29,12 +29,24 @@
             android:layout_marginStart="4dp"/>
     </LinearLayout>
 
-    <com.github.barteksc.pdfviewer.PDFView
-        android:id="@+id/pdfView"
+    <FrameLayout
+        android:id="@+id/pdfContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_below="@id/header"
         android:layout_marginTop="16dp"
-        android:background="#CCCCCC"/>
+        android:background="#EEEEEE">
+
+        <com.github.barteksc.pdfviewer.PDFView
+            android:id="@+id/pdfView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <com.example.readaloud.HighlightView
+            android:id="@+id/highlightView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+    </FrameLayout>
 
 </RelativeLayout>
